@@ -1,0 +1,10 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "netsh": true,
+        "pio": true,
+        "Out-File": true,
+        "py": true,
+        "ForEach-Object": true,
+        "Get-PnpDevice": true
+    }
+}
