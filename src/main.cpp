@@ -4062,6 +4062,7 @@ void drawCodingPlanPage() {
 // ===== 待机页 v9（纯白 · 大日期 + 有趣元素，字号全部放大）=====
 // 年份 Font8 红 75px；日期「8月11日」= Font8 大数字 + efontCN_24 中文（深蓝）；
 // 顶栏去掉周几（只 ●WiFi + ●电量）；星期红色圆角块；农历+宜忌 16号；天气图标+24号
+// 颜色：年份用 TFT_RED（用户规格「红」；勿用深紫 0x4810，Spectra6 调色板最近邻会匹配黑/蓝导致偏暗）
 void drawStandbyPage() {
     const int W = SCREEN_WIDTH, H = SCREEN_HEIGHT;
     M5.Display.fillRect(0, 0, W, H, TFT_WHITE);
@@ -4075,23 +4076,10 @@ void drawStandbyPage() {
     int wd3 = (tm0.tm_wday + 7) % 7;
     lunarCalc(yr, dt.date.month, dt.date.date, calLunar, sizeof(calLunar), calGanzhi, sizeof(calGanzhi));
 
-    // ---- 顶栏（去周几，只 ●WiFi + ●电量，16号）----
-    M5.Display.setFont(&fonts::efontCN_16_b);
-    M5.Display.setTextDatum(textdatum_t::middle_left);
-    M5.Display.setTextColor(wifiConnected ? TFT_YELLOW : TFT_RED, TFT_WHITE);
-    M5.Display.drawString(wifiConnected ? "● WiFi" : "● 离线", 20, 20);
-    int bLevel = M5.Power.getBatteryLevel();
-    char batBuf[16];
-    snprintf(batBuf, sizeof(batBuf), "● 电量 %d%%", bLevel >= 0 ? bLevel : 0);
-    M5.Display.setTextDatum(textdatum_t::middle_right);
-    M5.Display.setTextColor(bLevel >= 20 ? TFT_DARKGREEN : TFT_RED, TFT_WHITE);
-    M5.Display.drawString(batBuf, W - 20, 20);
-
-    // ---- 年份：2026年（红色 Font8 大数字 + 中文"年" efontCN_24 放大3x，中线对齐）----
+    // ---- 年份：2026年（红 Font8 大数字 + 中文"年" efontCN_24 放大3x，中线对齐）----
     char yBuf[8];
     snprintf(yBuf, sizeof(yBuf), "%d", yr);
     M5.Display.setTextDatum(textdatum_t::middle_center);
-    M5.Display.setTextColor(TFT_RED, TFT_WHITE);
     M5.Display.setFont(&fonts::Font8);
     M5.Display.setTextSize(1);
     int yW = M5.Display.textWidth(yBuf);
@@ -4100,7 +4088,7 @@ void drawStandbyPage() {
     int ycw3 = M5.Display.textWidth("年");
     int yTotal = yW + ycw3;
     int yX = (W - yTotal) / 2;
-    int yY = 60;
+    int yY = 78;
     M5.Display.setFont(&fonts::Font8);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_RED, TFT_WHITE);
@@ -4126,7 +4114,7 @@ void drawStandbyPage() {
     int cw3 = M5.Display.textWidth("月");
     int total = mW2 + cw3 + dW2 + cw3;
     int sx = (W - total) / 2;
-    int dY = 150;
+    int dY = 166;
     // 数字（Font8 不缩放）
     M5.Display.setFont(&fonts::Font8);
     M5.Display.setTextSize(1);
@@ -4145,17 +4133,18 @@ void drawStandbyPage() {
     M5.Display.setFont(&fonts::efontCN_24_b);
     int wkW = M5.Display.textWidth(wkBuf) + 48;
     int wkX = (W - wkW) / 2;
-    M5.Display.fillRoundRect(wkX, 244, wkW, 48, 12, TFT_RED);
+    M5.Display.fillRoundRect(wkX, 216, wkW, 48, 12, TFT_RED);
     M5.Display.setTextDatum(textdatum_t::middle_center);
     M5.Display.setTextColor(TFT_WHITE, TFT_RED);
-    M5.Display.drawString(wkBuf, W / 2, 268);
+    M5.Display.drawString(wkBuf, W / 2, 240);
 
     // ---- 农历 + 宜忌（16号放大）----
-    char lrBuf[56];
+    // 缓冲需 ≥ 农历15字节 + " · "×2 + 宜/忌各30字节 = 81字节；原56截断导致"忌"显示不全
+    char lrBuf[96];
     snprintf(lrBuf, sizeof(lrBuf), "%s · %s · %s", calLunar, calYi, calJi);
     M5.Display.setFont(&fonts::efontCN_16_b);
     M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
-    M5.Display.drawString(lrBuf, W / 2, 308);
+    M5.Display.drawString(lrBuf, W / 2, 288);
 
     // ---- 天气：图标 + 24号文字 ----
     char wxBuf[32];
@@ -4163,13 +4152,13 @@ void drawStandbyPage() {
     M5.Display.setFont(&fonts::efontCN_24_b);
     M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
     int wxW = M5.Display.textWidth(wxBuf);
-    M5.Display.drawString(wxBuf, W / 2, 340);
-    drawWeatherIcon(W / 2 - wxW / 2 - 22, 334, 15, weatherText);
+    M5.Display.drawString(wxBuf, W / 2, 324);
+    drawWeatherIcon(W / 2 - wxW / 2 - 22, 318, 15, weatherText);
 
     // ---- 提示（16号放大）----
     M5.Display.setFont(&fonts::efontCN_16_b);
     M5.Display.setTextColor(TFT_DARKGREY, TFT_WHITE);
-    M5.Display.drawString("▲ 按任意键唤醒", W / 2, 378);
+    M5.Display.drawString("▲ 按任意键唤醒", W / 2, 356);
 
     M5.Display.setTextDatum(textdatum_t::top_left);
 }
