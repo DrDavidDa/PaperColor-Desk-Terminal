@@ -1,19 +1,28 @@
 <div align="center">
 
-# 📟 eInk Desk Terminal
+# 📟 M5Stack PaperColor · eInk Desk Terminal
 
-### 墨水屏桌面学习终端 · A Color E-Ink Desk Study Terminal
+### 把官方 PaperColor 彩色墨水屏，变成你的桌面学习终端
 
-**M5Stack PaperColor · ESP32-S3 · Spectra 6 彩色墨水屏 · 离线中文语音**
+**A Full-Featured Desk Study Terminal for M5Stack PaperColor**
 
-把一块 4 寸彩色墨水屏，变成你的桌面「第三屏」——黄历、新闻早报、记忆卡片、番茄钟、语音待办、环境仪表盘，全部离线可用、低功耗待机、越用越懂你。
+> 一块 4 寸 **Spectra 6 全彩墨水屏**，低功耗常亮摆上桌——黄历、新闻早报、记忆卡片、番茄钟、语音待办、环境仪表盘，全部离线可用、越用越懂你。
 
+[![M5Stack PaperColor](https://img.shields.io/badge/Hardware-M5Stack_PaperColor-FF6600)](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit)
+[![ESP32-S3R8](https://img.shields.io/badge/SoC-ESP32--S3R8-E7352C)](https://www.espressif.com/)
+[![Spectra 6](https://img.shields.io/badge/Display-4in_Spectra_6_Full_Color-00B2A9)](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ready-8A2BE2)](https://platformio.org/)
-[![ESP32-S3](https://img.shields.io/badge/ESP32-S3R8-FF6600)](https://www.espressif.com/)
-[![Arduino](https://img.shields.io/badge/Arduino-framework-00979D)](https://www.arduino.cc/)
-[![E-Ink](https://img.shields.io/badge/Display-Spectra_6_600x400-00B2A9)](https://shop.m5stack.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/DrDavidDa/eInk-Desk-Terminal/pulls)
+
+</div>
+
+<div align="center">
+
+![M5Stack PaperColor](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1239/C151_main-pictures_01.webp)
+
+**🚀 基于 [M5Stack PaperColor](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit) 深度定制**
+[🛒 官方购买](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit) ・ [📖 官方文档](https://docs.m5stack.com/en/core/PaperColor)
 
 </div>
 
@@ -21,7 +30,20 @@
 
 ## ✨ 它是什么
 
-一块 **600×400 彩色墨水屏**，低功耗常亮地摆在桌上，替代手机去看「今天、新闻、要背的知识、该干什么」。
+**这是 M5Stack PaperColor 的「完全体」固件**——把官方 4 寸 Spectra 6 全彩墨水屏开发板，变成一块摆在桌上、低功耗常亮、越用越懂你的「第三屏」：替代手机去看「今天、新闻、要背的知识、该干什么」。
+
+### 硬件基底（M5Stack PaperColor 官方规格）
+
+| 项 | 规格 | 项 | 规格 |
+|----|------|----|------|
+| 主控 | ESP32-S3R8 双核 240MHz | 屏幕 | 4" E-Ink **Spectra 6 全彩** 400×600 |
+| 内存 | 16MB Flash + 8MB PSRAM | 电池 | 1250mAh · 待机仅 **92.53µA** |
+| 语音 | ES8311 编解码 + MEMS 麦克风(AEC) + 1W 喇叭 | 传感 | SHT40 温湿度 + RX8130CE RTC |
+| 扩展 | microSD + 红外 + 2×RGB + HY2.0 | 尺寸 | 70.8×103.9×8.5mm · 73.3g |
+
+> 🛒 [Get one now!](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit) — 官方商店 ・ 📖 [Docs](https://docs.m5stack.com/en/core/PaperColor) — 官方文档
+
+### 功能速览
 
 - 🗓️ **日历黄历**：农历 / 干支 / 宜忌 + 月历 + 天气
 - 📰 **资讯早报**：实时 RSS 过滤科技新闻
@@ -163,7 +185,7 @@ flowchart LR
 
 | 组件 | 说明 |
 |------|------|
-| M5Stack **PaperColor** | ESP32-S3R8 + 4" Spectra 6 彩色墨水屏 |
+| [🛒 M5Stack **PaperColor**](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit) | ESP32-S3R8 + 4" Spectra 6 彩色墨水屏（[官方文档](https://docs.m5stack.com/en/core/PaperColor)） |
 | microSD 卡 | 存考点卡片、语音待办、二维码图 |
 | USB-C 数据线 | 烧录 + 串口（建议优质线材） |
 
