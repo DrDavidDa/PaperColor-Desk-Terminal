@@ -5,6 +5,8 @@
         "Out-File": true,
         "py": true,
         "ForEach-Object": true,
-        "Get-PnpDevice": true
+        "Get-PnpDevice": true,
+        "gh": true,
+        "Add-Content": true
     }
 }

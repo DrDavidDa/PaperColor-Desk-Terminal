@@ -1,18 +1,31 @@
 # -*- coding: utf-8 -*-
 """PaperColor 二次审查修复验证：启动 / 联网(RSS/WX) / 串口诊断路径(#PLAY #CFG)"""
-import serial, time, sys
+import serial, time, sys, subprocess
 
 PORT = 'COM4'
 BAUD = 115200
 
+def hard_reset():
+    """用 esptool 硬复位设备（DTR/RTS 时序在 ESP32-S3 USB-JTAG 上不可靠）。
+    复位后设备从零启动重新计时（3 分钟待机窗口），保证回归不被 light sleep 打断。"""
+    subprocess.run(['py', '-m', 'esptool', '--port', PORT, 'hard_reset'],
+                   capture_output=True, timeout=30)
+
+def open_serial():
+    """hard_reset 后 USB 重新枚举有延迟，轮询等待 COM4 可打开（最多 20 秒）。"""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            return serial.Serial(PORT, BAUD, timeout=2)
+        except Exception:
+            time.sleep(1.0)
+    raise SystemExit('!! COM4 打开失败（设备可能进入 light sleep，需按键唤醒后重试）')
+
 def main():
-    ser = serial.Serial(PORT, BAUD, timeout=2)
+    hard_reset()
+    ser = open_serial()
     time.sleep(0.5)
-    # 显式复位设备：回归从干净启动重新计时，避免设备已运行>3分钟触发 light sleep 打断测试
-    ser.setDTR(False); ser.setRTS(True); time.sleep(0.1)
-    ser.setDTR(True);  time.sleep(0.1)
-    ser.setDTR(False); time.sleep(0.3)
-    # 清空启动期输出
+    # 清空启动期输出（设备启动含 SD+TTS 约 20 秒，此处等待就绪）
     deadline = time.time() + 3
     while time.time() < deadline:
         ser.readline()

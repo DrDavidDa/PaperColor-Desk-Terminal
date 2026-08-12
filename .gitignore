@@ -58,3 +58,8 @@ verify_news.py
 include/README
 lib/README
 test/README
+
+# ===== 待机/唤醒验证临时脚本（本地保留）=====
+interact_sleep.py
+listen_sleep.py
+listen_wake.py

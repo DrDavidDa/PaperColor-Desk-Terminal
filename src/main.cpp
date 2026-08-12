@@ -22,6 +22,7 @@
 #include <WiFiClientSecure.h>
 #include <time.h>
 #include <esp_sleep.h>
+#include <driver/rtc_io.h>
 #include <SD.h>
 #include <FS.h>
 #include <SPI.h>
@@ -644,7 +645,7 @@ bool powerMenuShown = false;     // END 页长按C 弹出关机/重启菜单
 // ===== 省电待机（E2）：闲置自动待机 + 任意键唤醒 =====
 bool standbyMode = false;        // 待机中（降频/断WiFi/待机页）
 unsigned long lastActivityMs = 0; // 最近一次按键活动时刻
-#define IDLE_SLEEP_MS 180000UL    // 闲置3分钟进入待机（生产值；测试临时60000已恢复）
+#define IDLE_SLEEP_MS 180000UL    // 闲置3分钟进入待机（生产值；#STANDBY 命令可强制进待机测试）
 bool wifiReconnectPending = false; // 待机唤醒后待执行 WiFi 重连
 bool cpWifiOk = false;           // 智谱轮询的 WiFi 连接缓存（待机断网时重置）
 bool cpWifiBusy = false;         // WiFi 连接/智谱拉取中（RGB 青色反馈）
@@ -657,6 +658,15 @@ void wakeFromStandby() {
     standbyMode = false;
     setCpuFrequencyMhz(240);
     wifiReconnectPending = true;
+    // ★ 唤醒后重配三键输入上拉（重要）：light sleep 唤醒后配置了 EXT1 唤醒的 RTC 引脚
+    // 可能仍处于 RTC 模式，digitalRead 恒高 → 按键检测全部失效无法切页。
+    // 重新 pinMode(INPUT_PULLUP) 恢复数字输入 + 同步 prevLevel 防脏边沿。
+    pinMode(BTN_A_GPIO, INPUT_PULLUP);
+    pinMode(BTN_B_GPIO, INPUT_PULLUP);
+    pinMode(BTN_C_GPIO, INPUT_PULLUP);
+    keyA.prevLevel = !digitalRead(BTN_A_GPIO);
+    keyB.prevLevel = !digitalRead(BTN_B_GPIO);
+    keyC.prevLevel = !digitalRead(BTN_C_GPIO);
     // 唤醒后若天气数据偏旧(>1h)则标记刷新：loop 天气定时在 WiFi 重连成功后自动拉取，
     // 下次待机页即显示新天气（节流避免频繁唤醒反复拉取）
     if (weatherUpdatedAt == 0 || millis() - weatherUpdatedAt > 3600000UL) {
@@ -3881,6 +3891,10 @@ void handleCodingPlanSerial() {
                         bool ok = WiFi.hostByName(hosts[i], ip);
                         Serial.printf("[DNS] %s -> %s\n", hosts[i], ok ? ip.toString().c_str() : "FAIL");
                     }
+                } else if (strncmp(cpSerialBuf, "#STANDBY", 8) == 0) {
+                    // 诊断：强制立即进入待机（三键唤醒验证用；把闲置计时设为过去 → 待机条件立即成立）
+                    lastActivityMs = millis() - IDLE_SLEEP_MS - 1;
+                    Serial.println("[CMD] #STANDBY 已触发，下一轮 loop 进入待机");
                 } else if (strncmp(cpSerialBuf, "#STATUS", 7) == 0) {
                     // 诊断：打印固件版本 + Coding Plan 配置状态（版本=编译时间，确认固件是否最新）
                     Serial.printf("[STATUS] fw=%s %s page=%d use_wifi=%d ssid=%s cookie_len=%d pollnow=%d last=%lu cfg_ok=%d\n",
@@ -4371,9 +4385,15 @@ void loop() {
         renderScreen(false);   // 待机页纯白日期+天气（epd_text 彩色），进入画一次
         // ===== ★ 轻睡眠：CPU 停转（省最大功耗 40~80mA），按键 GPIO 唤醒 =====
         // light sleep 保留 RAM 状态，唤醒瞬时继续；待机功耗从 ~80mA 降到 ~2mA
+        // 三键 RTC 上拉：仅 INPUT_PULLUP 在 light sleep 时 RTC 域上拉可能失效→GPIO9/10 浮空
+        // 导致 EXT1 ANY_LOW 只有 GPIO1(C键) 能唤醒；显式 RTC 上拉保证睡眠期间输入稳定
+        rtc_gpio_pullup_en(BTN_A_GPIO); rtc_gpio_pulldown_dis(BTN_A_GPIO);
+        rtc_gpio_pullup_en(BTN_B_GPIO); rtc_gpio_pulldown_dis(BTN_B_GPIO);
+        rtc_gpio_pullup_en(BTN_C_GPIO); rtc_gpio_pulldown_dis(BTN_C_GPIO);
         esp_sleep_enable_ext1_wakeup((1ULL << BTN_C_GPIO) | (1ULL << BTN_B_GPIO) | (1ULL << BTN_A_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
+        Serial.printf("[SLEEP] A=%d B=%d C=%d\n", digitalRead(BTN_A_GPIO), digitalRead(BTN_B_GPIO), digitalRead(BTN_C_GPIO));
         esp_light_sleep_start();   // 阻塞直到按键唤醒
-        Serial.println("[WAKE] 轻睡眠唤醒，恢复运行");
+        Serial.printf("[WAKE] 轻睡眠唤醒 cause=%d ext1=0x%llx\n", (int)esp_sleep_get_wakeup_cause(), (unsigned long long)esp_sleep_get_ext1_wakeup_status());
         wakeFromStandby();         // 恢复 240MHz + 标记 WiFi 重连
     }
     // 待机页不定时刷新：只显示当天日期+天气缓存（无时钟），省电 + 保护墨水屏寿命
