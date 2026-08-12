@@ -21,6 +21,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+#include <esp_sleep.h>
 #include <SD.h>
 #include <FS.h>
 #include <SPI.h>
@@ -4348,8 +4349,8 @@ void loop() {
     updateCustomButtons();     // 自研按键：电平边沿检测，不受刷新阻塞影响
     unsigned long now = millis();
 
-    // 温湿度采样：仅记录数值，不触发刷新（避免频繁刷新屏幕）
-    if (now - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
+    // 温湿度采样：仅记录数值，不触发刷新（避免频繁刷新屏幕）；待机中跳过（省电）
+    if (!standbyMode && now - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
         lastSensorReadTime = now;
         readSHT40();
     }
@@ -4375,9 +4376,16 @@ void loop() {
         standbyMode = true;
         setCpuFrequencyMhz(80);
         if (WiFi.status() == WL_CONNECTED) { WiFi.disconnect(); wifiConnected = false; }
+        WiFi.mode(WIFI_OFF);  // ★ 彻底关闭 WiFi 无线电（仅 disconnect 会残留 modem 供电，省 20~35mA）
         cpWifiOk = false;   // 重置智谱轮询连接缓存，唤醒后可重新连接
-        Serial.println("[STANDBY] 进入待机(降频80MHz+断WiFi)");
+        Serial.println("[STANDBY] 进入待机(降频+关WiFi无线电)");
         renderScreen(false);   // 待机页纯白日期+天气（epd_text 彩色），进入画一次
+        // ===== ★ 轻睡眠：CPU 停转（省最大功耗 40~80mA），按键 GPIO 唤醒 =====
+        // light sleep 保留 RAM 状态，唤醒瞬时继续；待机功耗从 ~80mA 降到 ~2mA
+        esp_sleep_enable_ext1_wakeup((1ULL << BTN_C_GPIO) | (1ULL << BTN_B_GPIO) | (1ULL << BTN_A_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
+        esp_light_sleep_start();   // 阻塞直到按键唤醒
+        Serial.println("[WAKE] 轻睡眠唤醒，恢复运行");
+        wakeFromStandby();         // 恢复 240MHz + 标记 WiFi 重连
     }
     // 待机页不定时刷新：只显示当天日期+天气缓存（无时钟），省电 + 保护墨水屏寿命
 
