@@ -20,10 +20,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install PlatformIO
+        run: pip install platformio
+
       - name: PlatformIO Build
-        uses: platformio/platformio-action@v1
-        with:
-          project-conf: platformio.ini
+        run: pio run
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
