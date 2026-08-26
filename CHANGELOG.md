@@ -4,8 +4,12 @@
 
 ## [Unreleased]
 
-- ⚡ **真·待机省电**：待机时 WiFi 关无线电 + CPU 轻睡眠（light sleep），待机功耗 ~80mA → ~2mA
-- 本地唤醒词（喊话唤醒，省电 vs 体验权衡中）
+### 修复
+- **RTC 日期不同步**：SNTP(UDP123) 在 iPhone 热点下不可靠 → 日期停在旧值。新增 HTTP Date 兜底校准（`fetchHttpTimeSync` 拉 www.baidu.com 响应头 → settimeofday + 写回 RTC 芯片），开机/待机唤醒 SNTP 后兜底执行，实测 RTC=真实日期
+- 新增 `#TIME` 诊断命令：对比系统 `time()` 与 RTC 芯片当前值
+- `verify_audit.py` 增强：`ser.write` 加 `write_timeout` 防 USB 卡死无限阻塞 + 异常捕获与明确提示（light sleep 后需物理重插 USB）
+
+### 待评估
 - 天气多城市配置
 - Web 端卡片管理
 

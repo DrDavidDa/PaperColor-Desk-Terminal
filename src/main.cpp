@@ -21,6 +21,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+#include <sys/time.h>
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
 #include <SD.h>
@@ -88,7 +89,6 @@ void ledSetBrightness(uint8_t br) { rgbStrip.setBrightness(br); }
 
 // SD 卡配置
 #define SD_IMAGE_TOTAL            12                     // 第一章图解卡片总数
-#define SD_PHOTO_MAX              50                     // 个人相册动态扫描最大支持照片数
 
 // 2026年中级经济师考试预估日期: 2026-11-07
 #define EXAM_YEAR  2026
@@ -118,14 +118,6 @@ RuntimeCard* kpCards = nullptr;      // 运行时卡片存储（PSRAM 动态分�
 size_t kpCount = 0;                  // 实际加载卡片数（0=使用内置）
 void loadCardsFromSD();              // 前向声明
 void stopVoicePlayback();            // 前向声明（playCurrentTodoVoice 调用）
-
-struct ConceptComparison {
-    const char* const title;      // 对比主题
-    const char* const nameA;      
-    const char* const defA;       
-    const char* const nameB;      
-    const char* const defB;       
-};
 
 struct NewsItem {
     const char* const tag;        // 标签
@@ -191,45 +183,6 @@ inline const char* cardAnswer(size_t i) {
 inline const char* cardMnemonic(size_t i) {
     return kpCount > 0 ? kpCards[i].mnemonic : KNOWLEDGE_DB[i].mnemonic;
 }
-
-const ConceptComparison COMPARISON_DB[] = {
-    {
-        "闪卡1: 圈内人 vs 圈外人 (LMX) & 费德勒权变",
-        "【概念A】LMX 交换理论",
-        "领导与下属建立高质量(圈内人)或低质量(圈外人)交换关系。圈内人得信任资源，圈外人仅限于正式契约。",
-        "【概念B】费德勒权变理论",
-        "认为没有一成不变的最佳领导模式。效果取决于领导风格(LPC量表)与团队情境(职位权力/任务结构/关系)的匹配。"
-    },
-    {
-        "闪卡2: 需求拉上型通胀 vs 成本推进型通胀",
-        "【概念A】需求拉上型",
-        "‘过多货币追逐过少商品’。社会总需求超过总供给引发物价上涨，伴随经济扩展与货币超发。",
-        "【概念B】成本推进型",
-        "‘供给端成本抬升’。原材料暴涨或工资增长超过生产率，导致企业生产成本增加、物价被动上涨。"
-    },
-    {
-        "闪卡3: 经济补偿金 vs 赔偿金 (劳动合同)",
-        "【概念A】经济补偿金 (合法解约)",
-        "用人单位依法解除或终止劳动合同时向劳动者支付。按工作年限计算(N或N+1)，3倍12年双封顶。",
-        "【概念B】赔偿金 (违法解约)",
-        "用人单位【违法解除】合同时的惩罚性赔偿，标准为经济补偿金的2倍(2N)。二者不可同时适用！"
-    },
-    {
-        "闪卡4: 扩张性财政政策 vs 紧缩性货币政策",
-        "【概念A】扩张性财政政策",
-        "政府主导：减税、增加公共投资支出、扩大国债发行，拉动社会总需求，应对经济衰退与需求不足。",
-        "【概念B】紧缩性货币政策",
-        "央行主导：提高准备金率、提高再贴现率、公开市场卖出证券，收紧流动性，抑制通货膨胀。"
-    },
-    {
-        "闪卡5: 绩效加薪 (Merit Pay) vs 绩效奖金 (Bonus)",
-        "【概念A】绩效加薪 (永久累加)",
-        "永久性累加进基本工资。基于上年度绩效评价调高基薪，具累积效应，会增加企业长期固定成本。",
-        "【概念B】绩效奖金 (一次性)",
-        "一次性支付，不累加进基本工资。针对短期特定业绩目标的奖励(年终奖/提成)，控制固定成本。"
-    }
-};
-const size_t COMPARISON_COUNT = sizeof(COMPARISON_DB) / sizeof(COMPARISON_DB[0]);
 
 const NewsItem NEWS_DB[] = {
     {
@@ -456,11 +409,6 @@ uint8_t currentPage = 0;        // 0: 日历黄历, 1: 早报, 2: 考点, 3: Cod
 size_t ebbinghausIndex = 0;     
 size_t newsIndex = 0;           
 
-// 动态相册照片列表 (自动扫描 /photos/ 目录)
-char photoPaths[SD_PHOTO_MAX][64];
-size_t photoCount = 0;
-size_t photoIndex = 0;
-
 // ===== 语音速记待办 (页面 2) =====
 #define TODO_MAX 30
 struct TodoItem {
@@ -642,10 +590,86 @@ bool hasSDCard = false;
 bool wifiConnected = false;
 bool timeSynced = false;
 bool powerMenuShown = false;     // END 页长按C 弹出关机/重启菜单
+
+// ===== RTC 芯片时间同步（数据正确性关键）=====
+// 待机页/日历页/黄历/定时提醒全部读 M5.Rtc（RTC 芯片），而 WiFi 连接只 configTime 启动 SNTP 同步系统 time，
+// 不写回 RTC 芯片 → 日期永远停在编译时间（曾导致 8/21 显示成 8/12）。此函数把同步后的系统时间回写 RTC 芯片。
+bool syncRtcFromNTP() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 3000)) return false;   // 等待 SNTP 响应（最多 3s）
+    if (timeinfo.tm_year + 1900 < 2024) return false;   // SNTP 未生效（系统时间仍为 1970/旧值），不覆盖 RTC
+    m5::rtc_datetime_t rtcTime;
+    rtcTime.date.year = timeinfo.tm_year + 1900;
+    rtcTime.date.month = timeinfo.tm_mon + 1;
+    rtcTime.date.date = timeinfo.tm_mday;
+    rtcTime.date.weekDay = timeinfo.tm_wday;
+    rtcTime.time.hours = timeinfo.tm_hour;
+    rtcTime.time.minutes = timeinfo.tm_min;
+    rtcTime.time.seconds = timeinfo.tm_sec;
+    M5.Rtc.setDateTime(rtcTime);
+    timeSynced = true;
+    Serial.printf("[RTC] NTP 同步 RTC 芯片: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  rtcTime.date.year, rtcTime.date.month, rtcTime.date.date,
+                  rtcTime.time.hours, rtcTime.time.minutes, rtcTime.time.seconds);
+    return true;
+}
+
+// ===== HTTP 时间权威校准：SNTP(UDP123) 在部分热点/防火墙被拦截时不可用，改走 HTTP 响应头 Date =====
+// 无论 SNTP 结果如何都调用一次（HTTP 成功则 settimeofday 覆盖系统 time() 并写回 RTC 芯片）
+bool fetchHttpTimeSync() {
+    WiFiClient client;
+    if (!client.connect("www.baidu.com", 80)) return false;
+    client.setTimeout(6);
+    client.println("GET / HTTP/1.1");
+    client.println("Host: www.baidu.com");
+    client.println("User-Agent: Mozilla/5.0");
+    client.println("Connection: close");
+    client.println();
+    unsigned long deadline = millis() + 8000;
+    char buf[1024];
+    int n = 0;
+    while (client.connected() && millis() < deadline && n < (int)sizeof(buf) - 1) {
+        if (client.available()) buf[n++] = client.read();
+        else delay(5);
+    }
+    buf[n] = 0;
+    client.stop();
+    // Date: Wed, 26 Aug 2026 06:58:10 GMT（RFC1123，GMT 即 UTC）
+    char* p = strstr(buf, "Date: ");
+    if (!p) return false;
+    p += 6;
+    int d = 0, y = 0, h = 0, mi = 0, s = 0;
+    char mon[4] = {0};
+    if (sscanf(p, "%*s %d %3s %d %d:%d:%d", &d, mon, &y, &h, &mi, &s) != 6) return false;
+    static const char* const M[12] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+    int m = 0;
+    for (int i = 0; i < 12; i++) if (strncmp(mon, M[i], 3) == 0) { m = i + 1; break; }
+    if (m == 0 || y < 2024 || d < 1 || d > 31) return false;
+    // Date 头是 GMT(UTC)，纯算术转 epoch（不依赖 TZ 环境变量，避免时区/DST 歧义）
+    static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    long days = 0;
+    for (int yy = 1970; yy < y; yy++) {
+        bool leap = (yy % 4 == 0 && yy % 100 != 0) || (yy % 400 == 0);
+        days += leap ? 366 : 365;
+    }
+    for (int mm = 1; mm < m; mm++) {
+        int dm = mdays[mm - 1];
+        if (mm == 2 && ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0))) dm = 29;
+        days += dm;
+    }
+    days += d - 1;
+    time_t utc = days * 86400L + h * 3600L + mi * 60L + s;
+    if (utc < 1700000000LL) return false;   // 2023-11 之后，防异常值
+    struct timeval tv = { utc, 0 };
+    settimeofday(&tv, NULL);        // 覆盖系统 time()（UTC epoch，getLocalTime 按 +8h 显示北京时间）
+    syncRtcFromNTP();               // 用正确的 time() 写回 RTC 芯片（待机页/日历页日期正确）
+    Serial.printf("[RTC] HTTP 权威校准: %04d-%02d-%02d %02d:%02d:%02d UTC\n", y, m, d, h, mi, s);
+    return true;
+}
 // ===== 省电待机（E2）：闲置自动待机 + 任意键唤醒 =====
 bool standbyMode = false;        // 待机中（降频/断WiFi/待机页）
 unsigned long lastActivityMs = 0; // 最近一次按键活动时刻
-#define IDLE_SLEEP_MS 180000UL    // 闲置3分钟进入待机（生产值；#STANDBY 命令可强制进待机测试）
+#define IDLE_SLEEP_MS 300000UL    // 闲置5分钟进入待机（生产值；#STANDBY 命令可强制进待机测试）
 bool wifiReconnectPending = false; // 待机唤醒后待执行 WiFi 重连
 bool cpWifiOk = false;           // 智谱轮询的 WiFi 连接缓存（待机断网时重置）
 bool cpWifiBusy = false;         // WiFi 连接/智谱拉取中（RGB 青色反馈）
@@ -686,6 +710,8 @@ bool reconnectWifiFromConfig() {
         if (WiFi.status() == WL_CONNECTED) {
             wifiConnected = true;
             configTime(8 * 3600, 0, "ntp.aliyun.com", "cn.pool.ntp.org", "pool.ntp.org");
+            syncRtcFromNTP();            // 待机唤醒后把真实时间写回 RTC 芯片（否则日期停在编译时间）
+            fetchHttpTimeSync();         // HTTP 权威校准：SNTP 被拦截时强制覆盖真实时间
             Serial.printf("[WAKE] WiFi 已重连: %s (IP %s)\n", cpWifiSsid[i], WiFi.localIP().toString().c_str());
             return true;
         }
@@ -866,44 +892,6 @@ bool findKnowledgeImage(size_t index, char* outPath, size_t outSize) {
     return false;
 }
 
-void scanPhotoDirectory() {
-    photoCount = 0;
-    if (!initSDCard()) return;
-    
-    File dir = SD.open("/photos");
-    if (!dir || !dir.isDirectory()) {
-        dir = SD.open("/");
-    }
-    if (!dir || !dir.isDirectory()) return;
-
-    File file = dir.openNextFile();
-    while (file && photoCount < SD_PHOTO_MAX) {
-        if (!file.isDirectory()) {
-            const char* name = file.name();
-            if (name[0] == '.') {
-                file = dir.openNextFile();
-                continue;
-            }
-            if (strstr(name, ".jpg") || strstr(name, ".JPG") || strstr(name, ".jpeg") ||
-                strstr(name, ".png") || strstr(name, ".PNG") || strstr(name, ".bmp") || strstr(name, ".BMP")) {
-                char fullPath[80];
-                if (name[0] == '/') {
-                    strncpy(fullPath, name, sizeof(fullPath));
-                    fullPath[sizeof(fullPath) - 1] = '\0';
-                } else if (dir.name()[0] == '/' && strcmp(dir.name(), "/photos") == 0) {
-                    snprintf(fullPath, sizeof(fullPath), "/photos/%s", name);
-                } else {
-                    snprintf(fullPath, sizeof(fullPath), "/%s", name);
-                }
-                strncpy(photoPaths[photoCount], fullPath, sizeof(photoPaths[0]));
-                photoPaths[photoCount][sizeof(photoPaths[0]) - 1] = '\0';
-                photoCount++;
-            }
-        }
-        file = dir.openNextFile();
-    }
-}
-
 // 从 SD 卡读取待办 TXT 文件（/todo.txt 或 /todos/todo.txt），每行一条
 // 定时提醒持久化（/reminders.txt，每行 "HH:MM|内容"）
 void saveReminders() {
@@ -1057,15 +1045,6 @@ void saveTodoListToSD() {
         f.println();
     }
     f.close();
-}
-
-// 标记当前待办为已完成
-void markTodoDone() {
-    if (todoCount == 0) return;
-    todoItems[todoIndex].done = true;
-    saveTodoListToSD();   // 写回 SD 卡持久化
-    snprintf(memoryNoticeBuf, sizeof(memoryNoticeBuf), "[已完成 ✅]");
-    memoryNoticeTime = millis();
 }
 
 // 前向声明（供 refreshPageData / recordTodoVoice 调用）
@@ -3276,6 +3255,8 @@ void pollZhipuCodingPlan() {
                 wifiConnected = true;   // 顶栏显示 WiFi（initWiFiNTP 用占位SSID连不上，这里补）
                 // 修复M5: 配时区+SNTP 同步真实时间（否则 RSS 每天8点定时判断永不成立）
                 configTime(8 * 3600, 0, "ntp.aliyun.com", "cn.pool.ntp.org", "pool.ntp.org");
+                syncRtcFromNTP();        // 开机 WiFi 连接成功：把真实时间写回 RTC 芯片（待机页/日历页日期正确）
+                fetchHttpTimeSync();     // HTTP 权威校准：SNTP 被拦截时强制覆盖真实时间
                 Serial.printf("[CP] WiFi 已连接: %s (IP %s)\n", cpWifiSsid[i], WiFi.localIP().toString().c_str());
                 break;
             }
@@ -3901,6 +3882,15 @@ void handleCodingPlanSerial() {
                                   __DATE__, __TIME__, (int)currentPage,
                                   (int)cpUseWifi, cpWifiSsid[0], (int)strlen(cpZhipuCookie),
                                   (int)cpPollingNow, cpLastPollAt, (int)cpData.connected);
+                } else if (strncmp(cpSerialBuf, "#TIME", 5) == 0) {
+                    // 诊断：对比系统 time() 与 RTC 芯片当前值（定位日期不同步）
+                    time_t now = time(nullptr);
+                    struct tm tmi;
+                    localtime_r(&now, &tmi);
+                    auto rdt = M5.Rtc.getDateTime();
+                    Serial.printf("[TIME] sys=%04d-%02d-%02d %02d:%02d:%02d rtc=%04d-%02d-%02d %02d:%02d:%02d\n",
+                                  tmi.tm_year + 1900, tmi.tm_mon + 1, tmi.tm_mday, tmi.tm_hour, tmi.tm_min, tmi.tm_sec,
+                                  rdt.date.year, rdt.date.month, rdt.date.date, rdt.time.hours, rdt.time.minutes, rdt.time.seconds);
                 } else if (strncmp(cpSerialBuf, "#CFGREAD", 8) == 0) {
                     // 诊断：读取 SD 卡 config.ini 实际内容（token 只显示长度，防泄露）
                     if (initSDCard()) {
@@ -4320,7 +4310,6 @@ void setup() {
     loadCardsFromSD();        // 先加载 SD 考点卡片（kpCount 决定后续用 SD 还是内置）
     loadTodoFromSD();
     loadReminders();          // 加载定时提醒（/reminders.txt）
-    scanPhotoDirectory();
     loadCodingPlanConfig();   // 读取 Coding Plan 配置（缺失则默认）
     loadMemoryStates();       // 依赖 cardTotal()，必须在 loadCardsFromSD 之后
     initTTS();                // 中文语音合成（模型来自 flash voice_data 分区；失败静默降级）
