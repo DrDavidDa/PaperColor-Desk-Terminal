@@ -32,6 +32,8 @@
 #include <M5Unified.h>
 #include <M5GFX.h>
 #include <Adafruit_NeoPixel.h>
+// HWCDC：检测 USB-Serial/JTAG 是否插入（light sleep 会卡死 USB 数据通路，据此跳过 light sleep）
+#include "HWCDC.h"
 
 // 中文语音合成（esp-sr v1.9.5 预编译库，模型从 flash voice_data 分区读入 PSRAM）
 #include <esp_tts.h>
@@ -577,6 +579,7 @@ struct KeyState {
     bool clickPending;   // 本次循环产生一次点击
     bool holdPending;    // 本次循环产生一次长按
     bool holdFired;      // 长按是否已触发
+    bool suppressUntilRelease;  // 待机唤醒键抑制：松手前不产生点击/长按（防误触）
 };
 KeyState keyA, keyB, keyC;
 
@@ -590,6 +593,7 @@ bool hasSDCard = false;
 bool wifiConnected = false;
 bool timeSynced = false;
 bool powerMenuShown = false;     // END 页长按C 弹出关机/重启菜单
+bool suppressWakeClick = false;  // light sleep 唤醒后抑制唤醒键的首次点击/长按（防止唤醒动作被误判为切页等）
 
 // ===== RTC 芯片时间同步（数据正确性关键）=====
 // 待机页/日历页/黄历/定时提醒全部读 M5.Rtc（RTC 芯片），而 WiFi 连接只 configTime 启动 SNTP 同步系统 time，
@@ -670,6 +674,7 @@ bool fetchHttpTimeSync() {
 bool standbyMode = false;        // 待机中（降频/断WiFi/待机页）
 unsigned long lastActivityMs = 0; // 最近一次按键活动时刻
 #define IDLE_SLEEP_MS 300000UL    // 闲置5分钟进入待机（生产值；#STANDBY 命令可强制进待机测试）
+int wakeJumpPage = -1;          // 待机唤醒后跳转目标页：A/B→0(首页), C→4(语音待办)；-1=不跳转
 bool wifiReconnectPending = false; // 待机唤醒后待执行 WiFi 重连
 bool cpWifiOk = false;           // 智谱轮询的 WiFi 连接缓存（待机断网时重置）
 bool cpWifiBusy = false;         // WiFi 连接/智谱拉取中（RGB 青色反馈）
@@ -682,6 +687,7 @@ void wakeFromStandby() {
     standbyMode = false;
     setCpuFrequencyMhz(240);
     wifiReconnectPending = true;
+    suppressWakeClick = true;   // ★ 抑制唤醒键的首次按键事件：长按某键唤醒后，松开会被误判成该键点击（如 C 键切页跳转到语音待办）
     // ★ 唤醒后重配三键输入上拉（重要）：light sleep 唤醒后配置了 EXT1 唤醒的 RTC 引脚
     // 可能仍处于 RTC 模式，digitalRead 恒高 → 按键检测全部失效无法切页。
     // 重新 pinMode(INPUT_PULLUP) 恢复数字输入 + 同步 prevLevel 防脏边沿。
@@ -691,6 +697,19 @@ void wakeFromStandby() {
     keyA.prevLevel = !digitalRead(BTN_A_GPIO);
     keyB.prevLevel = !digitalRead(BTN_B_GPIO);
     keyC.prevLevel = !digitalRead(BTN_C_GPIO);
+
+    // ★ 待机唤醒直达页：A/B → 首页(0)，C → 语音待办(4)
+    // 唤醒键按住期间抑制其点击/长按（松手不误触），跳转由 loop 按键处理前执行
+    wakeJumpPage = -1;
+    KeyState* wk = nullptr;
+    if (!digitalRead(BTN_A_GPIO))      { wakeJumpPage = 0; wk = &keyA; }
+    else if (!digitalRead(BTN_B_GPIO)) { wakeJumpPage = 0; wk = &keyB; }
+    else if (!digitalRead(BTN_C_GPIO)) { wakeJumpPage = 4; wk = &keyC; }
+    if (wk) {
+        wk->suppressUntilRelease = true;
+        wk->clickPending = false;
+        wk->holdPending = false;
+    }
     // 唤醒后若天气数据偏旧(>1h)则标记刷新：loop 天气定时在 WiFi 重连成功后自动拉取，
     // 下次待机页即显示新天气（节流避免频繁唤醒反复拉取）
     if (weatherUpdatedAt == 0 || millis() - weatherUpdatedAt > 3600000UL) {
@@ -1437,8 +1456,8 @@ bool asrTranscribe(const uint8_t* audio, size_t fsize, char* outText, size_t out
     for (int pi = 0; pi < 4 && !upFail; pi++) {
         size_t off = 0;
         while (off < parts[pi].n) {
-            if (millis() - tStart > 15000) { upFail = true; break; }
-            size_t chunk = parts[pi].n - off; if (chunk > 512) chunk = 512;
+            if (millis() - tStart > 30000) { upFail = true; break; }   // 大录音(数百KB)在弱网上传慢，放宽到 30s
+            size_t chunk = parts[pi].n - off; if (chunk > 2048) chunk = 2048;   // 大块减少写次数
             size_t w = client.write(parts[pi].p + off, chunk);
             if (w == 0) { upFail = true; break; }
             off += w;
@@ -1447,14 +1466,14 @@ bool asrTranscribe(const uint8_t* audio, size_t fsize, char* outText, size_t out
     if (upFail) { Serial.println("[ASR] 上传失败/超时"); client.stop(); return false; }
     Serial.printf("[ASR] 上传 %u 字节 %lums\n", (unsigned)fsize, (unsigned long)(millis() - tStart));
 
-    // 读响应（最长 15s，短音频转写通常 2-5s）
+    // 读响应（最长 20s，长录音转写需更久）
     const int RBUF = 4096;
     static char* rbuf = nullptr;
     if (!rbuf) rbuf = (char*)heap_caps_malloc(RBUF, MALLOC_CAP_SPIRAM);
     if (!rbuf) return false;
     int pos = 0;
     unsigned long t0 = millis();
-    while (client.connected() && millis() - t0 < 15000 && pos < RBUF - 1) {
+    while (client.connected() && millis() - t0 < 20000 && pos < RBUF - 1) {
         while (client.available() && pos < RBUF - 1) {
             char c = client.read();
             if (c >= 0) rbuf[pos++] = c;
@@ -1477,11 +1496,18 @@ bool asrTranscribe(const uint8_t* audio, size_t fsize, char* outText, size_t out
     return true;
 }
 
-// 转写任务入口：联网转写（不碰 SD/EPD 避免 SPI 冲突），结果由主循环消费
+// 转写任务入口：联网转写（不碰 SD/EPD 避免 SPI 冲突），结果由主循环消费；失败自动重试 2 次（弱网超时恢复）
 void asrTaskEntry(void*) {
     Serial.println("[ASR] 任务启动");
     char buf[512];
-    bool ok = asrTranscribe(asrAudioBuf, asrAudioLen, buf, sizeof(buf));
+    bool ok = false;
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        if (attempt > 0) {
+            Serial.printf("[ASR] 重试 %d/%d\n", attempt + 1, 2);
+            vTaskDelay(3000 / portTICK_PERIOD_MS);
+        }
+        ok = asrTranscribe(asrAudioBuf, asrAudioLen, buf, sizeof(buf));
+    }
     if (ok) {
         strncpy(asrResult, buf, sizeof(asrResult) - 1);
         asrResult[sizeof(asrResult) - 1] = '\0';
@@ -1826,13 +1852,14 @@ static void scanKey(KeyState& k, bool pressed) {
         // 保持中
         if (!k.holdFired && (millis() - k.pressMs >= BTN_HOLD_MS)) {
             k.holdFired = true;
-            k.holdPending = true;   // 触发一次长按
+            if (!k.suppressUntilRelease) k.holdPending = true;   // 唤醒键长按不触发
         }
     } else if (!pressed && k.prevLevel) {
         // 刚释放
-        if (!k.holdFired) {
-            k.clickPending = true;  // 短按=点击
+        if (!k.holdFired && !k.suppressUntilRelease) {
+            k.clickPending = true;  // 短按=点击（唤醒键松手不触发）
         }
+        k.suppressUntilRelease = false;   // 松手后解除抑制
     }
     k.prevLevel = pressed;
 }
@@ -3817,6 +3844,48 @@ void handleCodingPlanSerial() {
                         Serial.printf("[ASRDIAG] 响应 %d 字节 耗时 %lums\n", got, (unsigned long)(millis() - t1));
                     }
                     Serial.println("[ASRDIAG] done");
+                } else if (strncmp(cpSerialBuf, "#ASRTEST", 8) == 0) {
+                    // 诊断：直接转写设备 SD 上的 /record/todo_0.wav（复用已有录音，验证转写链路与失败环节）
+                    // 成功后顺带回填对应待办的转写文字
+                    Serial.println("[ASRTEST] 开始转写 /record/todo_0.wav");
+                    if (initSDCard() && SD.exists("/record/todo_0.wav")) {
+                        File rf = SD.open("/record/todo_0.wav", FILE_READ);
+                        if (rf) {
+                            size_t sz = rf.size();
+                            if (sz >= 44 && sz <= 2 * 1024 * 1024UL) {
+                                uint8_t* ab = (uint8_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+                                if (ab) {
+                                    rf.read(ab, sz);
+                                    char txt[512];
+                                    bool ok = asrTranscribe(ab, sz, txt, sizeof(txt));
+                                    Serial.printf("[ASRTEST] 转写%s: %s\n", ok ? "成功" : "失败", txt[0] ? txt : "(无文字)");
+                                    // 成功后回填到匹配该录音的待办
+                                    if (ok && txt[0]) {
+                                        for (size_t i = 0; i < todoCount && i < TODO_MAX; i++) {
+                                            if (strcmp(todoItems[i].audioFile, "/record/todo_0.wav") == 0) {
+                                                strncpy(todoItems[i].asr, txt, sizeof(todoItems[i].asr) - 1);
+                                                todoItems[i].asr[sizeof(todoItems[i].asr) - 1] = '\0';
+                                                saveTodoListToSD();
+                                                Serial.printf("[ASRTEST] 已回填待办%u: %s\n", (unsigned)i, txt);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    free(ab);
+                                } else Serial.println("[ASRTEST] PSRAM分配失败");
+                            } else Serial.printf("[ASRTEST] 文件大小异常 %u\n", (unsigned)sz);
+                            rf.close();
+                        } else Serial.println("[ASRTEST] 打开文件失败");
+                    } else Serial.println("[ASRTEST] 无 /record/todo_0.wav");
+                    Serial.println("[ASRTEST] done");
+                } else if (strncmp(cpSerialBuf, "#CP", 3) == 0) {
+                    // 诊断：打印当前 CodingPlan 额度数据（cpData 内存值）
+                    Serial.printf("[CP] 5h=%d%% 7d=%d%% mcp=%d%% conn=%d status=%s update=%s\n"
+                                  "[CP] 5hReset=%s 7dReset=%s mcpReset=%s token=%ld main=%ld\n",
+                                  cpData.quota_5h_percent, cpData.quota_7d_percent, cpData.quota_mcp_percent,
+                                  (int)cpData.connected, cpData.plan_status, cpData.update_time,
+                                  cpData.quota_5h_reset_time, cpData.quota_7d_reset_time, cpData.quota_mcp_reset_time,
+                                  (long)cpData.daily_token_total, (long)cpData.daily_token_main);
                 } else if (strncmp(cpSerialBuf, "#TODODUMP", 9) == 0) {
                     // 诊断：打印所有待办（含转写文字），验证语音转写是否回填
                     Serial.printf("[TODO] count=%d\n", (int)todoCount);
@@ -3939,119 +4008,130 @@ static void drawQuotaBar(int x, int y, int w, int percent) {
     }
 }
 
-// 绘制 Coding Plan 页面（主体 75% 高，上三卡 + 下两栏）
+// 绘制 Coding Plan 页面（上三卡大字号 + 下两栏，Spectra6 高饱和色）
 void drawCodingPlanPage() {
-    int startY = STATUS_BAR_HEIGHT;
-    int areaW = SCREEN_WIDTH - MARGIN_X * 2;
-    int areaH = (int)(MAIN_AREA_HEIGHT * 0.75f);   // 主体 75%
     int x0 = MARGIN_X;
+    int areaW = SCREEN_WIDTH - MARGIN_X * 2;
+    // 是否有额度缓存数据（update_time 非 "--"）：有缓存就显示实际值，完全无数据才显示占位
+    // （修复：conn 短暂为 0 不代表无数据，按 update_time 判断避免"图标显示但百分比 --"的矛盾）
+    bool hasData = (strncmp(cpData.update_time, "--", 2) != 0);
 
-    // ---- 上部：三张额度卡片 ----
-    int cardGap = 10;
+    // ============ 上部：三张额度卡片（更大更粗，颜色更高饱和） ============
+    int cardY = STATUS_BAR_HEIGHT + 4;
+    int cardH = 172;
+    int cardGap = 12;
     int cardW = (areaW - cardGap * 2) / 3;
-    int cardH = areaH - 12;
     const char* const cardTitles[3] = {"5小时额度", "每周额度", "月额度"};
     const int percents[3] = {cpData.quota_5h_percent, cpData.quota_7d_percent, cpData.quota_mcp_percent};
     const char* const resets[3] = {cpData.quota_5h_reset_time, cpData.quota_7d_reset_time, cpData.quota_mcp_reset_time};
-
-    // 环形饼图颜色：5小时红 / 每周高密度蓝 / MCP绿
-    // 注意：ED2208 面板原生 6 色中蓝=EPD_BLUE{100,64,255}、绿=EPD_GREEN{67,138,28}，
-    // 均用面板精确 RGB 保证高密度（TFT_YELLOW 经 Bayer 抖动会发白，弃用）。
-    const uint32_t cardColors[3] = {TFT_RED, M5.Display.color565(100, 64, 255), M5.Display.color565(67, 138, 28)};
+    // Spectra6 面板精确高饱和色（ED2208 红料偏暗→用亮橙红；蓝=EPD_BLUE；绿=EPD_GREEN）
+    const uint32_t cardColors[3] = {
+        M5.Display.color565(255, 140, 0),
+        M5.Display.color565(100, 64, 255),
+        M5.Display.color565(67, 138, 28)
+    };
     for (int i = 0; i < 3; i++) {
         int cx = x0 + i * (cardW + cardGap);
-        int cy = startY + 6;
-        M5.Display.fillRoundRect(cx, cy, cardW, cardH, 10, TFT_WHITE);
-        M5.Display.drawRoundRect(cx, cy, cardW, cardH, 10, TFT_NAVY);
+        int cy = cardY;
+        // 卡片白底 + 同色粗描边（更醒目）
+        M5.Display.fillRoundRect(cx, cy, cardW, cardH, 12, TFT_WHITE);
+        M5.Display.drawRoundRect(cx, cy, cardW, cardH, 12, cardColors[i]);
 
-        // 顶部标题（14号粗体）
-        M5.Display.setFont(&fonts::efontCN_14_b);
-        M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
+        // 顶部标题（16号粗体，同色）
+        M5.Display.setFont(&fonts::efontCN_16_b);
+        M5.Display.setTextColor(cardColors[i], TFT_WHITE);
         M5.Display.setTextDatum(textdatum_t::middle_center);
         M5.Display.drawString(cardTitles[i], cx + cardW / 2, cy + 20);
 
-        // 环形饼图（-90° 顶部起顺时针，按百分比填充）
-        int cx2 = cx + cardW / 2, cy2 = cy + 72;
-        int rO = cardW / 3;
-        if (rO > 34) rO = 34;
-        int rI = rO - 9;
-        if (rI < 6) rI = 6;
-        M5.Display.fillArc(cx2, cy2, rO, rI, 0, 360, TFT_LIGHTGREY);          // 背景环
+        // 环形饼图（更大更粗：rO=40 rI=22，环宽 18px 密度高）
+        int cx2 = cx + cardW / 2, cy2 = cy + 84;
+        int rO = 40, rI = 22;
+        M5.Display.fillArc(cx2, cy2, rO, rI, 0, 360, TFT_LIGHTGREY);
         float a1 = -90.0f + percents[i] * 3.6f;
         if (a1 > 270.0f) a1 = 270.0f;
-        M5.Display.fillArc(cx2, cy2, rO, rI, -90.0f, a1, cardColors[i]);      // 进度弧
+        M5.Display.fillArc(cx2, cy2, rO, rI, -90.0f, a1, cardColors[i]);
 
-        // 中心百分比（24号粗体，颜色与卡片一致）
+        // 中心百分比（efontCN_24_b 放大 2x=48px 大而显著）；有缓存显示实际值，无数据显示 --
         M5.Display.setFont(&fonts::efontCN_24_b);
+        M5.Display.setTextSize(2);
         M5.Display.setTextColor(cardColors[i], TFT_WHITE);
         char pct[16];
-        snprintf(pct, sizeof(pct), "%d%%", percents[i]);
+        if (hasData) snprintf(pct, sizeof(pct), "%d%%", percents[i]);
+        else snprintf(pct, sizeof(pct), "--");
         M5.Display.drawString(pct, cx2, cy2);
+        M5.Display.setTextSize(1);
 
-        // 底部重置时间（12号小字）
-        M5.Display.setFont(&fonts::efontCN_12_b);
+        // 底部重置时间（14号，更清晰）
+        M5.Display.setFont(&fonts::efontCN_14_b);
         M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
         M5.Display.setTextDatum(textdatum_t::bottom_center);
         char resetBuf[24];
-        snprintf(resetBuf, sizeof(resetBuf), "重置 %s", resets[i]);
+        const char* r = (resets[i][0] == '\0' || !hasData) ? "--" : resets[i];
+        snprintf(resetBuf, sizeof(resetBuf), "重置 %s", r);
         M5.Display.drawString(resetBuf, cx + cardW / 2, cy + cardH - 6);
     }
     M5.Display.setTextDatum(textdatum_t::top_left);
 
-    // ---- 下部：5:5 左右分栏 ----
-    int lowY = startY + areaH;
-    int lowH = MAIN_AREA_HEIGHT - areaH;
+    // ============ 下部：5:5 分栏（加高防文字遮盖） ============
+    int lowY = cardY + cardH + 6;
+    int lowH = (STATUS_BAR_HEIGHT + MAIN_AREA_HEIGHT - 4) - lowY;
     int halfW = areaW / 2;
 
-    // 左下：当日用量
-    int lx = x0, ly = lowY + 4;
-    M5.Display.fillRoundRect(lx, ly, halfW - 5, lowH - 8, 8, TFT_WHITE);
-    M5.Display.drawRoundRect(lx, ly, halfW - 5, lowH - 8, 8, TFT_BLUE);
+    // 左下：今日Token消耗（数值 K/M 单位格式化更易读）
+    int lx = x0, ly = lowY;
+    M5.Display.fillRoundRect(lx, ly, halfW - 6, lowH, 10, TFT_WHITE);
+    M5.Display.drawRoundRect(lx, ly, halfW - 6, lowH, 10, cardColors[1]);
     M5.Display.setFont(&fonts::efontCN_16_b);
-    M5.Display.setTextColor(TFT_BLUE, TFT_WHITE);
+    M5.Display.setTextColor(cardColors[1], TFT_WHITE);
     M5.Display.setTextDatum(textdatum_t::top_center);
-    M5.Display.drawString("今日Token消耗", lx + (halfW - 5) / 2, ly + 8);
-    // 总消耗数值（20号粗体，但字体库无20，用24）
-    M5.Display.setFont(&fonts::efontCN_24_b);
-    M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
+    M5.Display.drawString("今日Token消耗", lx + (halfW - 6) / 2, ly + 8);
+    // 总消耗数值（K/M 单位，24号放大2x=48px 显著）
+    long tok = cpData.daily_token_total;
     char tokBuf[24];
-    snprintf(tokBuf, sizeof(tokBuf), "%ld", cpData.daily_token_total);
-    M5.Display.drawString(tokBuf, lx + (halfW - 5) / 2, ly + 42);
-    // 主模型占比（12号小字）
-    M5.Display.setFont(&fonts::efontCN_12_b);
-    M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
+    if (tok >= 1000000) snprintf(tokBuf, sizeof(tokBuf), "%.2fM", tok / 1000000.0);
+    else if (tok >= 1000) snprintf(tokBuf, sizeof(tokBuf), "%.1fK", tok / 1000.0);
+    else snprintf(tokBuf, sizeof(tokBuf), "%ld", tok);
+    M5.Display.setFont(&fonts::efontCN_24_b);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
+    M5.Display.drawString(tokBuf, lx + (halfW - 6) / 2, ly + 46);
+    M5.Display.setTextSize(1);
+    // 主模型占比（14号）
     long mainPct = 0;
-    if (cpData.daily_token_total > 0) mainPct = cpData.daily_token_main * 100 / cpData.daily_token_total;
+    if (tok > 0) mainPct = cpData.daily_token_main * 100 / tok;
+    M5.Display.setFont(&fonts::efontCN_14_b);
+    M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
     char mainBuf[32];
     snprintf(mainBuf, sizeof(mainBuf), "主模型占比 %ld%%", mainPct);
-    M5.Display.drawString(mainBuf, lx + (halfW - 5) / 2, ly + 80);
+    M5.Display.drawString(mainBuf, lx + (halfW - 6) / 2, ly + lowH - 24);
     M5.Display.setTextDatum(textdatum_t::top_left);
 
     // 右下：工具用量（比模型 token 更有意义的 plan 实时工作量）
-    int rx = x0 + halfW + 5, ry = lowY + 4;
-    M5.Display.fillRoundRect(rx, ry, halfW - 5, lowH - 8, 8, TFT_WHITE);
-    M5.Display.drawRoundRect(rx, ry, halfW - 5, lowH - 8, 8, TFT_NAVY);
+    int rx = x0 + halfW + 6, ry = lowY;
+    M5.Display.fillRoundRect(rx, ry, halfW - 6, lowH, 10, TFT_WHITE);
+    M5.Display.drawRoundRect(rx, ry, halfW - 6, lowH, 10, cardColors[2]);
     M5.Display.setFont(&fonts::efontCN_16_b);
-    M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
+    M5.Display.setTextColor(cardColors[2], TFT_WHITE);
     M5.Display.setTextDatum(textdatum_t::top_center);
-    M5.Display.drawString("工具用量", rx + (halfW - 5) / 2, ry + 8);
+    M5.Display.drawString("工具用量", rx + (halfW - 6) / 2, ry + 8);
     M5.Display.setTextDatum(textdatum_t::top_left);
     M5.Display.setFont(&fonts::efontCN_14_b);
     char statusBuf[64];
-    int yLine = ry + 36;
-    // 联网搜索 MCP 次数（深蓝高亮）
-    M5.Display.setTextColor(TFT_BLUE, TFT_WHITE);
+    int yLine = ry + 44;
+    // 联网搜索 MCP 次数（同色高亮）
+    M5.Display.setTextColor(cardColors[2], TFT_WHITE);
     snprintf(statusBuf, sizeof(statusBuf), "联网搜索 %ld次", cpData.tool_search_count);
-    M5.Display.drawString(statusBuf, rx + 10, yLine); yLine += 22;
+    M5.Display.drawString(statusBuf, rx + 12, yLine); yLine += 26;
     // 网页读取 MCP 次数
     M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
     snprintf(statusBuf, sizeof(statusBuf), "网页读取 %ld次", cpData.tool_webread_count);
-    M5.Display.drawString(statusBuf, rx + 10, yLine); yLine += 22;
+    M5.Display.drawString(statusBuf, rx + 12, yLine);
     // 更新时间（底部小字）
     bool overLimit = (cpData.quota_5h_percent >= cpAlertThreshold);
+    M5.Display.setFont(&fonts::efontCN_12_b);
     M5.Display.setTextColor(overLimit ? TFT_RED : TFT_NAVY, TFT_WHITE);
     snprintf(statusBuf, sizeof(statusBuf), "%s%s", overLimit ? "⚠超限 " : "", cpData.update_time);
-    M5.Display.drawString(statusBuf, rx + 10, ry + lowH - 18);
+    M5.Display.drawString(statusBuf, rx + 12, ry + lowH - 16);
     M5.Display.setTextDatum(textdatum_t::top_left);
 }
 
@@ -4339,6 +4419,16 @@ void setup() {
 void loop() {
     M5.update();               // M5Unified 内部外设更新
     updateCustomButtons();     // 自研按键：电平边沿检测，不受刷新阻塞影响
+    // ★ 唤醒抑制：light sleep 唤醒用的按键动作（按下+松开）不应被当成一次点击/长按，
+    // 否则长按 C 唤醒会误触发 C 的功能（切页跳转到语音待办）。唤醒后第一轮清空事件并重置电平基准。
+    if (suppressWakeClick) {
+        suppressWakeClick = false;
+        keyA.clickPending = keyB.clickPending = keyC.clickPending = false;
+        keyA.holdPending = keyB.holdPending = keyC.holdPending = false;
+        keyA.prevLevel = !digitalRead(BTN_A_GPIO);
+        keyB.prevLevel = !digitalRead(BTN_B_GPIO);
+        keyC.prevLevel = !digitalRead(BTN_C_GPIO);
+    }
     unsigned long now = millis();
 
     // 温湿度采样：仅记录数值，不触发刷新（避免频繁刷新屏幕）；待机中跳过（省电）
@@ -4364,7 +4454,8 @@ void loop() {
     }
 
     // 闲置自动待机（省电）：无操作超时 → 待机页 + 降频 + 断WiFi；任意键唤醒
-    if (!standbyMode && !isRecordingNow && !voiceCmdMode && !voicePlaying && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
+    // 转写排队中（asrPending）禁止待机：否则录音后 3 分钟无操作进 light sleep，转写任务永不执行
+    if (!standbyMode && !asrPending && !isRecordingNow && !voiceCmdMode && !voicePlaying && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
         standbyMode = true;
         setCpuFrequencyMhz(80);
         if (WiFi.status() == WL_CONNECTED) { WiFi.disconnect(); wifiConnected = false; }
@@ -4374,16 +4465,24 @@ void loop() {
         renderScreen(false);   // 待机页纯白日期+天气（epd_text 彩色），进入画一次
         // ===== ★ 轻睡眠：CPU 停转（省最大功耗 40~80mA），按键 GPIO 唤醒 =====
         // light sleep 保留 RAM 状态，唤醒瞬时继续；待机功耗从 ~80mA 降到 ~2mA
-        // 三键 RTC 上拉：仅 INPUT_PULLUP 在 light sleep 时 RTC 域上拉可能失效→GPIO9/10 浮空
-        // 导致 EXT1 ANY_LOW 只有 GPIO1(C键) 能唤醒；显式 RTC 上拉保证睡眠期间输入稳定
-        rtc_gpio_pullup_en(BTN_A_GPIO); rtc_gpio_pulldown_dis(BTN_A_GPIO);
-        rtc_gpio_pullup_en(BTN_B_GPIO); rtc_gpio_pulldown_dis(BTN_B_GPIO);
-        rtc_gpio_pullup_en(BTN_C_GPIO); rtc_gpio_pulldown_dis(BTN_C_GPIO);
-        esp_sleep_enable_ext1_wakeup((1ULL << BTN_C_GPIO) | (1ULL << BTN_B_GPIO) | (1ULL << BTN_A_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
-        Serial.printf("[SLEEP] A=%d B=%d C=%d\n", digitalRead(BTN_A_GPIO), digitalRead(BTN_B_GPIO), digitalRead(BTN_C_GPIO));
-        esp_light_sleep_start();   // 阻塞直到按键唤醒
-        Serial.printf("[WAKE] 轻睡眠唤醒 cause=%d ext1=0x%llx\n", (int)esp_sleep_get_wakeup_cause(), (unsigned long long)esp_sleep_get_ext1_wakeup_status());
-        wakeFromStandby();         // 恢复 240MHz + 标记 WiFi 重连
+        // ⚠️ USB 修复：USB-Serial/JTAG 外设进 light sleep 会停摆 → 主机 COM 数据通路卡死
+        // （打开报 PermissionError/设备没有发挥作用），需物理重插 USB 才能恢复。
+        // 因此仅当 USB 未插入（纯电池场景）才进 light sleep；USB 插着（桌面插电/开发调试）
+        // 则跳过 light sleep，只降频+关WiFi，串口保持可用随时可刷机/调试。
+        if (HWCDC::isPlugged()) {
+            Serial.println("[STANDBY] USB 已插入，跳过 light sleep（保持串口可用）");
+        } else {
+            // 三键 RTC 上拉：仅 INPUT_PULLUP 在 light sleep 时 RTC 域上拉可能失效→GPIO9/10 浮空
+            // 导致 EXT1 ANY_LOW 只有 GPIO1(C键) 能唤醒；显式 RTC 上拉保证睡眠期间输入稳定
+            rtc_gpio_pullup_en(BTN_A_GPIO); rtc_gpio_pulldown_dis(BTN_A_GPIO);
+            rtc_gpio_pullup_en(BTN_B_GPIO); rtc_gpio_pulldown_dis(BTN_B_GPIO);
+            rtc_gpio_pullup_en(BTN_C_GPIO); rtc_gpio_pulldown_dis(BTN_C_GPIO);
+            esp_sleep_enable_ext1_wakeup((1ULL << BTN_C_GPIO) | (1ULL << BTN_B_GPIO) | (1ULL << BTN_A_GPIO), ESP_EXT1_WAKEUP_ANY_LOW);
+            Serial.printf("[SLEEP] A=%d B=%d C=%d\n", digitalRead(BTN_A_GPIO), digitalRead(BTN_B_GPIO), digitalRead(BTN_C_GPIO));
+            esp_light_sleep_start();   // 阻塞直到按键唤醒
+            Serial.printf("[WAKE] 轻睡眠唤醒 cause=%d ext1=0x%llx\n", (int)esp_sleep_get_wakeup_cause(), (unsigned long long)esp_sleep_get_ext1_wakeup_status());
+            wakeFromStandby();         // 恢复 240MHz + 标记 WiFi 重连
+        }
     }
     // 待机页不定时刷新：只显示当天日期+天气缓存（无时钟），省电 + 保护墨水屏寿命
 
@@ -4661,6 +4760,16 @@ void loop() {
     // ===== 按键白名单（全部为显式用户操作；自研 GPIO 检测不受刷新阻塞影响） =====
     // 注意：updateCustomButtons 仅在 loop 顶部调用一次，
     // 不能在此重复调用，否则会清掉顶部扫描已产生的 click/hold 事件。
+    // ===== 待机唤醒直达页：唤醒键决定跳转（A/B→首页, C→语音待办），先于录音保护执行 =====
+    if (wakeJumpPage >= 0) {
+        int pg = wakeJumpPage;
+        wakeJumpPage = -1;
+        if (pg != currentPage) {
+            currentPage = pg;
+            refreshPageData();
+            renderScreen(false);
+        }
+    }
     // ===== 录音保护：录音期间只响应 C 键（停止录音），
     // 其他键全部忽略——避免误触 renderScreen 阻塞主循环导致丢采样！ =====
     if (isRecordingNow || voiceCmdMode) {
