@@ -112,10 +112,12 @@ HANDOFF.md              ← 本文件（交接清单）
 
 ## 7. 待办 / 未决（接手下一步）
 
-- [ ] **实机照片**：README 顶部暂用官方图，待拍实机照替换 ASCII 演示区
-- [ ] 死代码未删：`markTodoDone()`、相册、COMPARISON_DB、宜忌/天气伪随机（**用户选择不动**）
-- [ ] `#WX` 唤醒后立即执行可能失败（WiFi 重连延迟）→ 稍等重发即成功，可后续优化
-- [ ] CHANGELOG Unreleased：本地唤醒词（已砍，违背省电）/ 天气多城市 / Web 端卡片管理（均为可选方向，未定）
+- [x] **实机照片**：README 待机页大图 + 七页实拍画廊已上线（2026-08-30，`docs/images/`）
+- [x] ~~死代码未删~~：5 处无引用残留已清理（2026-08-30）
+- [x] ~~`#WX` 唤醒后立即执行可能失败~~：WiFi 重连失败 30 秒自动重试 + `#POLL` 先重连（2026-08-30）
+- [x] 天气多城市：config `weather_lat`/`weather_lon`/`weather_city`（默认北京）+ `write_config.py` 可选 `weather.txt`
+- [x] Web 端卡片管理：`card_manager.py`（`py -3 card_manager.py` → http://localhost:8765 ）
+- [ ] CHANGELOG Unreleased：本地唤醒词（已砍，违背省电）
 - [ ] 待机喊话唤醒 = **已否决**（用户 2026-08-13 决定，esp-sr 违背省电）
 
 ---

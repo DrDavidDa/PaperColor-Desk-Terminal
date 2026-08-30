@@ -80,6 +80,17 @@ def main():
         if sfk:
             config_lines.append('sf_api_key=%s' % sfk)
             print('SiliconFlow Key: %s...%s' % (sfk[:6], sfk[-4:]))
+    # 天气多城市（可选 weather.txt：每行 lat=39.9042 / lon=116.4074 / city=上海；不存在则默认北京）
+    wx_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weather.txt')
+    if os.path.exists(wx_file):
+        for ln in open(wx_file, encoding='utf-8'):
+            ln = ln.strip()
+            if '=' in ln:
+                k, v = ln.split('=', 1)
+                k = k.strip()
+                if k in ('weather_lat', 'weather_lon', 'weather_city') and v.strip():
+                    config_lines.append('%s=%s' % (k, v.strip()))
+                    print('天气配置: %s=%s' % (k, v.strip()))
     config_lines.append('zhipu_cookie=%s' % token)
     config = '\n'.join(config_lines) + '\n'
 
