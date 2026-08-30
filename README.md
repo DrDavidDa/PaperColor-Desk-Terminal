@@ -98,8 +98,10 @@
 | 日历黄历 | 资讯早报 | 考点闪卡 |
 |:---:|:---:|:---:|
 | ![](docs/images/calendar.jpg) | ![](docs/images/news.jpg) | ![](docs/images/study.jpg) |
-| **语音待办** | **状态仪表盘** | **二维码** |
-| ![](docs/images/voice.jpg) | ![](docs/images/dashboard.jpg) | ![](docs/images/qr.jpg) |
+| **Coding Plan** | **语音待办** | **状态仪表盘** |
+| ![](docs/images/coding.jpg) | ![](docs/images/voice.jpg) | ![](docs/images/dashboard.jpg) |
+| **二维码** | | |
+| ![](docs/images/qr.jpg) | | |
 
 ---
 
