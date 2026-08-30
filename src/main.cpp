@@ -89,9 +89,6 @@ void ledSetBrightness(uint8_t br) { rgbStrip.setBrightness(br); }
 #define POMODORO_FOCUS_MIN        25
 #define POMODORO_REST_MIN         5
 
-// SD 卡配置
-#define SD_IMAGE_TOTAL            12                     // 第一章图解卡片总数
-
 // 2026年中级经济师考试预估日期: 2026-11-07
 #define EXAM_YEAR  2026
 #define EXAM_MONTH 11
@@ -567,9 +564,8 @@ int ledTestR = 0, ledTestG = 0, ledTestB = 0;  // #LED 测试灯颜色
 unsigned long ledTestUntil = 0;     // #LED 测试灯截止
 unsigned long keyALast = 0, keyBLast = 0, keyCLast = 0;   // 每键独立防抖（切页按C不会吞掉后续B）
 
-unsigned long lastFullRefreshTime = 0; 
-unsigned long lastButtonTime = 0;      
-unsigned long lastSensorReadTime = 0;  
+unsigned long lastFullRefreshTime = 0;
+unsigned long lastSensorReadTime = 0;
 
 // ===== 自研按键状态（直接读 GPIO，不受刷新阻塞影响） =====
 struct KeyState {
@@ -900,18 +896,6 @@ bool initWiFiNTP() {
     return false;
 }
 
-bool findKnowledgeImage(size_t index, char* outPath, size_t outSize) {
-    static const char* suffixes[] = {".jpg", ".jpeg", ".png", ".bmp"};
-    for (const char* suffix : suffixes) {
-        snprintf(outPath, outSize, "/kp_%02d%s", (int)index + 1, suffix);
-        if (SD.exists(outPath)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// 从 SD 卡读取待办 TXT 文件（/todo.txt 或 /todos/todo.txt），每行一条
 // 定时提醒持久化（/reminders.txt，每行 "HH:MM|内容"）
 void saveReminders() {
     if (!initSDCard()) return;
@@ -2029,15 +2013,6 @@ void readSHT40() {
             hasSHT40 = true;
         }
     }
-}
-
-void getFormattedTime(char* buf, size_t bufSize) {
-    if (!buf || bufSize == 0) return;
-    auto dt = M5.Rtc.getDateTime();
-    snprintf(buf, bufSize, "%04d-%02d-%02d %02d:%02d",
-             dt.date.year < 2024 ? 2026 : dt.date.year,
-             dt.date.month, dt.date.date,
-             dt.time.hours, dt.time.minutes);
 }
 
 long julianDay(int y, int m, int d);   // 前向声明（getDaysToExam 调用，定义在其后）
@@ -4344,11 +4319,6 @@ void renderScreen(bool forceQuality) {
     M5.Display.display();
 }
 
-// 判断是否处于全彩冷却期（供状态栏提示用）
-bool isQualityCooldownActive() {
-    return cooldownBlocked;
-}
-
 // ====================================================================
 // 九、Arduino 标准 setup 与 loop
 // ====================================================================
@@ -4405,7 +4375,7 @@ void setup() {
     // 开机首屏：黑白快刷（epd_fast 约 2~3 秒），避免全彩刷新(16秒+)导致开机长时间按键无响应
     renderScreen(false);
     lastScreenUpdate = millis();
-    lastActivityMs = millis();   // 开机即视为活动：闲置 3 分钟自动待机（否则 lastActivityMs=0 永不待机）
+    lastActivityMs = millis();   // 开机即视为活动：闲置 5 分钟自动待机（否则 lastActivityMs=0 永不待机）
 }
 
 // ====================================================================
@@ -4454,7 +4424,7 @@ void loop() {
     }
 
     // 闲置自动待机（省电）：无操作超时 → 待机页 + 降频 + 断WiFi；任意键唤醒
-    // 转写排队中（asrPending）禁止待机：否则录音后 3 分钟无操作进 light sleep，转写任务永不执行
+    // 转写排队中（asrPending）禁止待机：否则录音后 5 分钟无操作进 light sleep，转写任务永不执行
     if (!standbyMode && !asrPending && !isRecordingNow && !voiceCmdMode && !voicePlaying && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
         standbyMode = true;
         setCpuFrequencyMhz(80);

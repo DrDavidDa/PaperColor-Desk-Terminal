@@ -1,10 +1,11 @@
 # 📟 PaperColor 项目交接清单（HANDOFF）
 
 > **项目**：M5Stack PaperColor 桌面学习终端（eInk Desk Terminal）
-> **交接时间**：2026-08-13
+> **交接时间**：2026-08-13（2026-08-27 全面梳理更新）
 > **一句话**：把官方 4 寸 Spectra 6 彩色墨水屏开发板做成低功耗常亮桌面学习终端 —— 日历黄历/资讯早报/考点闪卡/番茄钟/语音待办/环境仪表盘/二维码，全部离线可用。
-> **配套文档**：本清单 ← `PROGRESS.md`（进展快照+会话摘要）← 根目录 `CHANGELOG.md` / `README.md` / `docs/` ← repo 记忆 `papercolor-epd.md`（全部技术坑）
-> **唤醒词**：「继续小彩」= 恢复本项目上下文（先读 repo 记忆 + 本清单 + PROGRESS.md）
+> **⚠️ 完整权威交接**：👉 **`docs/COMPLETE-HANDOFF.md`**（2026-08-27 全量梳理版：固件架构/全部资源/脚本清单/云端API/路线图，接手 AI 必读本文档 + 该文件）
+> **配套文档**：本清单 ← `docs/COMPLETE-HANDOFF.md`（权威）← `PROGRESS.md`（进展快照+会话摘要）← 根目录 `CHANGELOG.md` / `README.md` / `docs/` ← repo 记忆 `papercolor-epd.md`（全部技术坑）
+> **唤醒词**：「继续小彩」= 恢复本项目上下文（先读 repo 记忆 + docs/COMPLETE-HANDOFF.md + PROGRESS.md）
 
 ---
 
@@ -40,7 +41,7 @@
 | 5 | 仪表盘 | 环境/设备/番茄/备考 | 上页 | 番茄开停 | — | — | 强刷 |
 | 6 | 二维码 | SD 二维码图 | 上页 | 下页 | — | — | 关机菜单 |
 
-**全局能力**：RGB 状态灯 / 3 分钟待机省电(light sleep) / 定时语音提醒 / 离线中文 TTS(esp-sr) / 语音助手「小彩」/ 串口诊断(#命令) / 多 WiFi(3 组) / 墨水屏刷新管控(30min 全彩冷却)
+**全局能力**：RGB 状态灯 / 5 分钟待机省电(light sleep) / 定时语音提醒 / 离线中文 TTS(esp-sr) / 语音助手「小彩」/ 串口诊断(#命令) / 多 WiFi(3 组) / 墨水屏刷新管控(30min 全彩冷却)
 
 > ⚠️ 页面顺序改动必须**全量同步**：`PAGE_TITLES` / `HINTS` / `pageBuf` switch / `renderScreen` switch / 按键 `%N` / `refreshPageData` —— 漏一处就"按键没反应"或底栏错乱。
 

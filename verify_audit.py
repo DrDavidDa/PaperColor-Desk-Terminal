@@ -7,10 +7,14 @@ BAUD = 115200
 
 def hard_reset():
     """用 esptool 硬复位设备（DTR/RTS 时序在 ESP32-S3 USB-JTAG 上不可靠）。
-    复位后设备从零启动重新计时（3 分钟待机窗口），保证回归不被 light sleep 打断。"""
+    复位后设备从零启动重新计时（5 分钟待机窗口），保证回归不被 light sleep 打断。
+    esptool v5+ 移除了独立 hard_reset 命令 → 优先 chip-id --after hard_reset，失败回退旧语法。"""
     try:
-        r = subprocess.run(['py', '-m', 'esptool', '--port', PORT, 'hard_reset'],
+        r = subprocess.run(['py', '-m', 'esptool', '--port', PORT, 'chip-id', '--after', 'hard_reset'],
                            capture_output=True, timeout=30)
+        if r.returncode != 0:
+            r = subprocess.run(['py', '-m', 'esptool', '--port', PORT, 'hard_reset'],
+                               capture_output=True, timeout=30)
         if r.returncode != 0:
             print('!! esptool hard_reset 未成功（设备可能在 light sleep，USB-JTAG 数据通路卡死）')
     except Exception as e:
@@ -48,7 +52,7 @@ def main():
             ser.write(c.encode() + b'\n')
         except serial.SerialException as e:
             print('!! 串口写入失败（%s）—— 设备 USB 数据通路可能卡死（light sleep 后遗症），\n'\
-                  '   请物理重插 USB 线后重跑（开机 3 分钟无按键会自动待机）' % e)
+                  '   请物理重插 USB 线后重跑（开机 5 分钟无按键会自动待机）' % e)
             return None
         out = []
         end = time.time() + wait
