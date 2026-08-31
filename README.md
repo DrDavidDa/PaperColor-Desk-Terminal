@@ -93,15 +93,13 @@
 
 **全局**：RGB 状态灯 · 待机省电 · 定时语音提醒 · 离线 TTS · 串口诊断 · 多 WiFi · 墨水屏刷新管控
 
-## 📸 七页实拍
+## 📸 六页实拍
 
 | 日历黄历 | 资讯早报 | 考点闪卡 |
 |:---:|:---:|:---:|
 | ![](docs/images/calendar.jpg) | ![](docs/images/news.jpg) | ![](docs/images/study.jpg) |
 | **Coding Plan** | **语音待办** | **状态仪表盘** |
 | ![](docs/images/coding.jpg) | ![](docs/images/voice.jpg) | ![](docs/images/dashboard.jpg) |
-| **二维码** | | |
-| ![](docs/images/qr.jpg) | | |
 
 ---
 
