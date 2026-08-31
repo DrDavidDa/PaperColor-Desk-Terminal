@@ -40,6 +40,7 @@ push_log.txt
 gen_out.txt
 lunar_table.txt
 analyze_out.txt
+/aigroup.jpg
 
 # ===== 参考材料（开发期，保留本地）=====
 esp_sr_readme.md
@@ -49,6 +50,7 @@ tts_test.cpp
 
 # ===== 内部开发文档（保留本地）=====
 PROGRESS.md
+docs/COMPLETE-HANDOFF.md
 
 # ===== 冗余验证脚本（保留主回归脚本 verify_audit.py / verify_all.py）=====
 verify_clean_news.py

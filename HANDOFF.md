@@ -1,10 +1,11 @@
 # 📟 PaperColor 项目交接清单（HANDOFF）
 
 > **项目**：M5Stack PaperColor 桌面学习终端（eInk Desk Terminal）
-> **交接时间**：2026-08-13
+> **交接时间**：2026-08-13（2026-08-27 全面梳理更新）
 > **一句话**：把官方 4 寸 Spectra 6 彩色墨水屏开发板做成低功耗常亮桌面学习终端 —— 日历黄历/资讯早报/考点闪卡/番茄钟/语音待办/环境仪表盘/二维码，全部离线可用。
-> **配套文档**：本清单 ← `PROGRESS.md`（进展快照+会话摘要）← 根目录 `CHANGELOG.md` / `README.md` / `docs/` ← repo 记忆 `papercolor-epd.md`（全部技术坑）
-> **唤醒词**：「继续小彩」= 恢复本项目上下文（先读 repo 记忆 + 本清单 + PROGRESS.md）
+> **⚠️ 完整权威交接**：👉 **`docs/COMPLETE-HANDOFF.md`**（2026-08-27 全量梳理版：固件架构/全部资源/脚本清单/云端API/路线图，接手 AI 必读本文档 + 该文件）
+> **配套文档**：本清单 ← `docs/COMPLETE-HANDOFF.md`（权威）← `PROGRESS.md`（进展快照+会话摘要）← 根目录 `CHANGELOG.md` / `README.md` / `docs/` ← repo 记忆 `papercolor-epd.md`（全部技术坑）
+> **唤醒词**：「继续小彩」= 恢复本项目上下文（先读 repo 记忆 + docs/COMPLETE-HANDOFF.md + PROGRESS.md）
 
 ---
 
@@ -40,7 +41,7 @@
 | 5 | 仪表盘 | 环境/设备/番茄/备考 | 上页 | 番茄开停 | — | — | 强刷 |
 | 6 | 二维码 | SD 二维码图 | 上页 | 下页 | — | — | 关机菜单 |
 
-**全局能力**：RGB 状态灯 / 3 分钟待机省电(light sleep) / 定时语音提醒 / 离线中文 TTS(esp-sr) / 语音助手「小彩」/ 串口诊断(#命令) / 多 WiFi(3 组) / 墨水屏刷新管控(30min 全彩冷却)
+**全局能力**：RGB 状态灯 / 5 分钟待机省电(light sleep) / 定时语音提醒 / 离线中文 TTS(esp-sr) / 语音助手「小彩」/ 串口诊断(#命令) / 多 WiFi(3 组) / 墨水屏刷新管控(30min 全彩冷却)
 
 > ⚠️ 页面顺序改动必须**全量同步**：`PAGE_TITLES` / `HINTS` / `pageBuf` switch / `renderScreen` switch / 按键 `%N` / `refreshPageData` —— 漏一处就"按键没反应"或底栏错乱。
 
@@ -111,10 +112,12 @@ HANDOFF.md              ← 本文件（交接清单）
 
 ## 7. 待办 / 未决（接手下一步）
 
-- [ ] **实机照片**：README 顶部暂用官方图，待拍实机照替换 ASCII 演示区
-- [ ] 死代码未删：`markTodoDone()`、相册、COMPARISON_DB、宜忌/天气伪随机（**用户选择不动**）
-- [ ] `#WX` 唤醒后立即执行可能失败（WiFi 重连延迟）→ 稍等重发即成功，可后续优化
-- [ ] CHANGELOG Unreleased：本地唤醒词（已砍，违背省电）/ 天气多城市 / Web 端卡片管理（均为可选方向，未定）
+- [x] **实机照片**：README 待机页大图 + 七页实拍画廊已上线（2026-08-30，`docs/images/`）
+- [x] ~~死代码未删~~：5 处无引用残留已清理（2026-08-30）
+- [x] ~~`#WX` 唤醒后立即执行可能失败~~：WiFi 重连失败 30 秒自动重试 + `#POLL` 先重连（2026-08-30）
+- [x] 天气多城市：config `weather_lat`/`weather_lon`/`weather_city`（默认北京）+ `write_config.py` 可选 `weather.txt`
+- [x] Web 端卡片管理：`card_manager.py`（`py -3 card_manager.py` → http://localhost:8765 ）
+- [ ] CHANGELOG Unreleased：本地唤醒词（已砍，违背省电）
 - [ ] 待机喊话唤醒 = **已否决**（用户 2026-08-13 决定，esp-sr 违背省电）
 
 ---

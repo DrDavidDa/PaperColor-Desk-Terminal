@@ -89,9 +89,6 @@ void ledSetBrightness(uint8_t br) { rgbStrip.setBrightness(br); }
 #define POMODORO_FOCUS_MIN        25
 #define POMODORO_REST_MIN         5
 
-// SD 卡配置
-#define SD_IMAGE_TOTAL            12                     // 第一章图解卡片总数
-
 // 2026年中级经济师考试预估日期: 2026-11-07
 #define EXAM_YEAR  2026
 #define EXAM_MONTH 11
@@ -484,7 +481,9 @@ char calGanzhi[48] = "";     // 干支
 char calYi[64] = "宜：祈福 出行";   // 宜
 char calJi[64] = "忌：动土 安葬";   // 忌
 char weatherText[64] = "晴";       // 今日天气（fetchWeather 联网拉取真实数据）
-char weatherCity[16] = "北京";     // 天气城市（默认北京）
+char weatherCity[16] = "北京";     // 天气城市（config weather_city 可覆盖）
+float weatherLat = 39.9042f;       // 天气纬度（config weather_lat 可覆盖，默认北京）
+float weatherLon = 116.4074f;      // 天气经度（config weather_lon 可覆盖，默认北京）
 int weatherHigh = 25, weatherLow = 16;
 char weatherTextTmr[64] = "多云";  // 明日天气
 int weatherHighTmr = 26, weatherLowTmr = 18;   // 明日高低温
@@ -567,9 +566,8 @@ int ledTestR = 0, ledTestG = 0, ledTestB = 0;  // #LED 测试灯颜色
 unsigned long ledTestUntil = 0;     // #LED 测试灯截止
 unsigned long keyALast = 0, keyBLast = 0, keyCLast = 0;   // 每键独立防抖（切页按C不会吞掉后续B）
 
-unsigned long lastFullRefreshTime = 0; 
-unsigned long lastButtonTime = 0;      
-unsigned long lastSensorReadTime = 0;  
+unsigned long lastFullRefreshTime = 0;
+unsigned long lastSensorReadTime = 0;
 
 // ===== 自研按键状态（直接读 GPIO，不受刷新阻塞影响） =====
 struct KeyState {
@@ -674,6 +672,7 @@ bool fetchHttpTimeSync() {
 bool standbyMode = false;        // 待机中（降频/断WiFi/待机页）
 unsigned long lastActivityMs = 0; // 最近一次按键活动时刻
 #define IDLE_SLEEP_MS 300000UL    // 闲置5分钟进入待机（生产值；#STANDBY 命令可强制进待机测试）
+unsigned long wifiRetryAt = 0;     // WiFi 重连失败的重试时刻（0=无待重试；热点晚开等场景 30s 后自动重试）
 int wakeJumpPage = -1;          // 待机唤醒后跳转目标页：A/B→0(首页), C→4(语音待办)；-1=不跳转
 bool wifiReconnectPending = false; // 待机唤醒后待执行 WiFi 重连
 bool cpWifiOk = false;           // 智谱轮询的 WiFi 连接缓存（待机断网时重置）
@@ -686,6 +685,7 @@ unsigned long lastScreenUpdate = 0;
 void wakeFromStandby() {
     standbyMode = false;
     setCpuFrequencyMhz(240);
+    wifiRetryAt = 0;
     wifiReconnectPending = true;
     suppressWakeClick = true;   // ★ 抑制唤醒键的首次按键事件：长按某键唤醒后，松开会被误判成该键点击（如 C 键切页跳转到语音待办）
     // ★ 唤醒后重配三键输入上拉（重要）：light sleep 唤醒后配置了 EXT1 唤醒的 RTC 引脚
@@ -902,18 +902,6 @@ bool initWiFiNTP() {
     return false;
 }
 
-bool findKnowledgeImage(size_t index, char* outPath, size_t outSize) {
-    static const char* suffixes[] = {".jpg", ".jpeg", ".png", ".bmp"};
-    for (const char* suffix : suffixes) {
-        snprintf(outPath, outSize, "/kp_%02d%s", (int)index + 1, suffix);
-        if (SD.exists(outPath)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// 从 SD 卡读取待办 TXT 文件（/todo.txt 或 /todos/todo.txt），每行一条
 // 定时提醒持久化（/reminders.txt，每行 "HH:MM|内容"）
 void saveReminders() {
     if (!initSDCard()) return;
@@ -2040,15 +2028,6 @@ void readSHT40() {
     }
 }
 
-void getFormattedTime(char* buf, size_t bufSize) {
-    if (!buf || bufSize == 0) return;
-    auto dt = M5.Rtc.getDateTime();
-    snprintf(buf, bufSize, "%04d-%02d-%02d %02d:%02d",
-             dt.date.year < 2024 ? 2026 : dt.date.year,
-             dt.date.month, dt.date.date,
-             dt.time.hours, dt.time.minutes);
-}
-
 long julianDay(int y, int m, int d);   // 前向声明（getDaysToExam 调用，定义在其后）
 int getDaysToExam() {
     auto dt = M5.Rtc.getDateTime();
@@ -2172,7 +2151,12 @@ void fetchWeather() {
             break;
         }
         // HTTP/1.0：避免服务器返回 Transfer-Encoding: chunked（1.1 特性），直接收完整 JSON body
-        client.println("GET /v1/forecast?latitude=39.9042&longitude=116.4074&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=Asia%2FShanghai&past_days=1&forecast_days=4 HTTP/1.0");
+        // 坐标走 config（weather_lat/weather_lon），默认北京；snprintf 拼 URL（Print::printf 的 %f 实测畸形，勿用）
+        char wxUrl[200];
+        snprintf(wxUrl, sizeof(wxUrl),
+                 "GET /v1/forecast?latitude=%.4f&longitude=%.4f&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=Asia%%2FShanghai&past_days=1&forecast_days=4 HTTP/1.0",
+                 weatherLat, weatherLon);
+        client.println(wxUrl);
         client.println("Host: api.open-meteo.com");
         client.println("User-Agent: Mozilla/5.0");
         client.println("Accept-Encoding: identity");
@@ -3132,6 +3116,9 @@ void loadCodingPlanConfig() {
         else if (key == "wifi_pass3") { strncpy(cpWifiPass[2], val.c_str(), 39); cpWifiPass[2][39] = '\0'; }
         else if (key == "zhipu_cookie") { strncpy(cpZhipuCookie, val.c_str(), sizeof(cpZhipuCookie) - 1); cpZhipuCookie[sizeof(cpZhipuCookie) - 1] = '\0'; }
         else if (key == "sf_api_key") { strncpy(sfApiKey, val.c_str(), sizeof(sfApiKey) - 1); sfApiKey[sizeof(sfApiKey) - 1] = '\0'; }
+        else if (key == "weather_lat") weatherLat = val.toFloat();
+        else if (key == "weather_lon") weatherLon = val.toFloat();
+        else if (key == "weather_city") { strncpy(weatherCity, val.c_str(), sizeof(weatherCity) - 1); weatherCity[sizeof(weatherCity) - 1] = '\0'; }
         else if (key == "use_wifi") cpUseWifi = val.equalsIgnoreCase("true");
     }
     f.close();
@@ -3822,7 +3809,8 @@ void handleCodingPlanSerial() {
                         Serial.println("[ERR] no sd");
                     }
                 } else if (strncmp(cpSerialBuf, "#POLL", 5) == 0) {
-                    // 强制立即轮询智谱（把 cpLastPollAt 置 0，下次 loop 即触发）
+                    // 强制立即轮询智谱（待机唤醒后 WiFi 未连则先重连，与 #WX 同路径；置 0 下次 loop 即触发）
+                    if (WiFi.status() != WL_CONNECTED) reconnectWifiFromConfig();
                     cpLastPollAt = 0;
                     Serial.println("[OK] poll triggered");
                 } else if (strncmp(cpSerialBuf, "#NEWS", 5) == 0) {
@@ -4362,11 +4350,6 @@ void renderScreen(bool forceQuality) {
     M5.Display.display();
 }
 
-// 判断是否处于全彩冷却期（供状态栏提示用）
-bool isQualityCooldownActive() {
-    return cooldownBlocked;
-}
-
 // ====================================================================
 // 九、Arduino 标准 setup 与 loop
 // ====================================================================
@@ -4423,7 +4406,7 @@ void setup() {
     // 开机首屏：黑白快刷（epd_fast 约 2~3 秒），避免全彩刷新(16秒+)导致开机长时间按键无响应
     renderScreen(false);
     lastScreenUpdate = millis();
-    lastActivityMs = millis();   // 开机即视为活动：闲置 3 分钟自动待机（否则 lastActivityMs=0 永不待机）
+    lastActivityMs = millis();   // 开机即视为活动：闲置 5 分钟自动待机（否则 lastActivityMs=0 永不待机）
 }
 
 // ====================================================================
@@ -4472,7 +4455,7 @@ void loop() {
     }
 
     // 闲置自动待机（省电）：无操作超时 → 待机页 + 降频 + 断WiFi；任意键唤醒
-    // 转写排队中（asrPending）禁止待机：否则录音后 3 分钟无操作进 light sleep，转写任务永不执行
+    // 转写排队中（asrPending）禁止待机：否则录音后 5 分钟无操作进 light sleep，转写任务永不执行
     if (!standbyMode && !asrPending && !isRecordingNow && !voiceCmdMode && !voicePlaying && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
         standbyMode = true;
         setCpuFrequencyMhz(80);
@@ -4512,7 +4495,15 @@ void loop() {
         if (wifiConnected) {
             cpLastPollAt = 0;                 // 唤醒后立即拉一次 CodingPlan 额度
             if (!wasConn) renderScreen(false); // 顶栏"离线"→"WiFi"：轻量刷新一次
+        } else {
+            wifiRetryAt = now + 30000UL;      // 首次重连失败：30 秒后自动重试（热点晚开/切换中）
         }
+    }
+    // WiFi 重连失败定时重试（非阻塞；连上后与唤醒同路径：cpLastPollAt=0 立即拉额度）
+    if (!wifiReconnectPending && !wifiConnected && wifiRetryAt != 0 && now >= wifiRetryAt
+        && !standbyMode && !isRecordingNow && !voiceCmdMode && !fileReceiving && !newsLoading && !keyBusy) {
+        wifiRetryAt = 0;
+        wifiReconnectPending = true;
     }
 
     // WiFi 直连智谱轮询（按配置间隔；仅更新内存，绝不刷屏，不阻塞主循环）
