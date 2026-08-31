@@ -805,7 +805,8 @@ void loadCardsFromSD() {
             Serial.printf("[CARD] %s JSON解析失败\n", path);
             continue;
         }
-        free(buf);
+        // 注意：deserializeJson 传可变 char* 是零拷贝模式，字符串值指向 buf 内部，
+        // 必须等下面遍历完再释放（先 free 后读 = UAF）
 
         JsonArray arr = doc.as<JsonArray>();
         for (JsonObject obj : arr) {
@@ -825,6 +826,7 @@ void loadCardsFromSD() {
             kpCount++;
         }
         Serial.printf("[CARD] %s 加载 %u 张\n", path, (unsigned)arr.size());
+        free(buf);   // JSON 遍历完毕，零拷贝字符串不再被引用，此时才安全释放
     }
 
     if (kpCount > 0) {
@@ -1722,6 +1724,13 @@ void saveRecording() {
     renderScreen(false);
 }
 
+// 停止播放并等 Speaker 任务退出对缓冲的读取（stop() 异步，立即 free 会与播放任务竞态）
+static void stopPlaybackSafe() {
+    M5.Speaker.stop();
+    unsigned long ws = millis();
+    while (M5.Speaker.isPlaying() && millis() - ws < 500UL) delay(5);
+}
+
 // 回放当前待办的语音 WAV（若该条目有关联录音文件）
 void playCurrentTodoVoice() {
     if (currentPage != 4 || todoCount == 0) return;
@@ -1753,7 +1762,7 @@ void playCurrentTodoVoice() {
     // 回放前若麦克风占用则先释放（共用 GPIO45/时钟，避免冲突）
     if (M5.Mic.isEnabled()) M5.Mic.end();
     M5.Speaker.begin();
-    M5.Speaker.stop();                    // 先停掉可能正在播放的上一段
+    stopPlaybackSafe();                   // 先停掉可能正在播放的上一段（等退出再换缓冲，防UAF）
 
     // 非阻塞回放：启动播放后立即返回，loop 轮询 isPlaying + 任意键可停止
     // （之前阻塞式 while 等 60 秒，录音中/播放中按键全被吞，用户无法打断）
@@ -1774,7 +1783,7 @@ void playCurrentTodoVoice() {
 void stopVoicePlayback() {
     if (!voicePlaying) return;
     voicePlaying = false;
-    M5.Speaker.stop();
+    stopPlaybackSafe();   // 等播放任务真正退出再 free（播放中释放 = UAF）
     if (voicePlayBuf) {
         free(voicePlayBuf);
         voicePlayBuf = nullptr;
@@ -3302,6 +3311,7 @@ void pollZhipuCodingPlan() {
     // 请求智谱 Coding Plan 用量接口（Authorization: Bearer 认证）
     WiFiClientSecure client;
     client.setInsecure();
+    client.setTimeout(8);   // TLS 握手/读写超时 8s（缺省无限挂会阻塞主循环）
     if (client.connect("open.bigmodel.cn", 443)) {
         client.println("GET /api/monitor/usage/quota/limit HTTP/1.1");
         client.println("Host: open.bigmodel.cn");
@@ -3324,6 +3334,8 @@ void pollZhipuCodingPlan() {
                     continue;
                 }
                 body += line;
+            } else {
+                delay(1);   // 等服务器响应期间让出 CPU（否则忙等阻塞按键检测）
             }
         }
         client.stop();
@@ -3354,6 +3366,7 @@ void pollZhipuCodingPlan() {
             snprintf(et, sizeof(et), "%04d-%02d-%02d+23:59:59", rdt.date.year, rdt.date.month, rdt.date.date);
             WiFiClientSecure c2;
             c2.setInsecure();
+            c2.setTimeout(8);   // TLS 握手/读写超时 8s
             if (c2.connect("open.bigmodel.cn", 443)) {
                 c2.printf("GET /api/monitor/usage/model-usage?startTime=%s&endTime=%s HTTP/1.1\r\n", st, et);
                 c2.println("Host: open.bigmodel.cn");
@@ -3374,6 +3387,8 @@ void pollZhipuCodingPlan() {
                             continue;
                         }
                         body2 += line;
+                    } else {
+                        delay(1);   // 等服务器响应期间让出 CPU
                     }
                 }
                 c2.stop();
@@ -3403,6 +3418,7 @@ void pollZhipuCodingPlan() {
             snprintf(et, sizeof(et), "%04d-%02d-%02d+23:59:59", rdt.date.year, rdt.date.month, rdt.date.date);
             WiFiClientSecure c3;
             c3.setInsecure();
+            c3.setTimeout(8);   // TLS 握手/读写超时 8s
             if (c3.connect("open.bigmodel.cn", 443)) {
                 c3.printf("GET /api/monitor/usage/tool-usage?startTime=%s&endTime=%s HTTP/1.1\r\n", st, et);
                 c3.println("Host: open.bigmodel.cn");
@@ -3423,6 +3439,8 @@ void pollZhipuCodingPlan() {
                             continue;
                         }
                         body3 += line;
+                    } else {
+                        delay(1);   // 等服务器响应期间让出 CPU
                     }
                 }
                 c3.stop();
