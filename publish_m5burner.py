@@ -6,11 +6,15 @@
 #   发布:   POST http://m5burner-api.m5stack.com/api/admin/firmware
 #           multipart: name/description/category/author/version/github/cover/firmware
 #           header: m5_auth_token=<token>
+#   更新:   PUT  {API}/api/admin/firmware/{fid}/{versionInfo.file}
+#           multipart: name/description/category/author/version/github + 可选 cover/firmware
+#           （cover、firmware 不传则保留原值；fid 不变 → 分享码不失效，无需重传 16MB）
 #   公开:   PUT  {API}/api/admin/firmware/{fid}/publish/{version}/1
 #   分享码: POST {API}/api/admin/firmware/share/{fid}/{version}
 # 用法:
 #   1. 在 m5_credentials.txt 写两行：第1行邮箱 第2行密码（已被 .gitignore 排除）
-#   2. python publish_m5burner.py
+#   2. python publish_m5burner.py            # 全量上传新固件
+#      python publish_m5burner.py --meta-only  # 只更新名称/介绍/封面（不动 16MB 固件）
 # 镜像合成（如尚未生成）:
 #   python merge_firmware_image.py
 import requests, sys, os, json
@@ -19,20 +23,25 @@ UIFLOW_HOST = 'https://uiflow2.m5stack.com'
 API = 'http://m5burner-api.m5stack.com'
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMAGE = os.path.join(HERE, 'm5burner_image.bin')
-COVER = os.path.join(HERE, 'docs', 'images', 'standby.jpg')
+COVER = os.path.join(HERE, 'docs', 'images', 'cover.gif')   # 轮播动图封面（make_cover.py 生成）
 CREDS = os.path.join(HERE, 'm5_credentials.txt')
 
-NAME = 'eInk Desk Terminal'
+NAME = 'PaperColor eInk Desk Terminal'
 VERSION = 'v1.0.0'
 CATEGORY = 'paper'          # M5Burner 官方 PaperColor 类别
-GITHUB = 'https://github.com/DrDavidDa/eInk-Desk-Terminal'
-DESCRIPTION = ('Full-featured eInk desk study terminal for M5Stack PaperColor '
-               '(ESP32-S3 + 4" Spectra 6 full-color E-Ink). 7 pages: lunar calendar '
-               '+ weather, tech news RSS, Anki-style flash cards with spaced repetition, '
-               'Zhipu CodingPlan quota dashboard, voice memo with offline Chinese TTS, '
-               'environment dashboard, QR viewer. Offline Chinese TTS + global voice '
-               'assistant "Xiaocai" (long-press C). Ultra-low-power standby ~2mA. '
-               'First boot: write WiFi config to SD /config.ini (see GitHub README).')
+GITHUB = 'https://github.com/DrDavidDa/PaperColor-Desk-Terminal'
+FID = '0fc711c40244fb17a7df65c434deda4d'   # 首次上传分配的固件 ID（meta-only 按它定位）
+DESCRIPTION = (
+    '🔥 M5Stack PaperColor 全彩墨水屏「完全体」固件：黄历天气 · 科技早报 · Anki 考点闪卡 · '
+    '番茄钟 · 语音待办 · 环境仪表盘，7 页桌面终端一屏掌控！\n'
+    '🎙 全离线中文 TTS + 全局语音助手「小彩」：任意页长按 C，说「打开日历」「开始番茄」，'
+    '一句话直达，彻底解放双手。\n'
+    '🌙 真·2mA 超低功耗待机，续航 25~50 天；墨水屏不闪烁、不烧屏，摆桌上常亮一整年。\n'
+    '⚡ M5Burner 一键烧录，SD 卡写入 WiFi 即联网，开箱即玩！\n'
+    'English: Turn your 4" Spectra 6 full-color eInk into an all-in-one desk terminal — '
+    'lunar calendar & weather, tech news RSS, spaced-repetition flashcards, Pomodoro, '
+    'voice memos & dashboard. Fully offline Chinese TTS + voice assistant (long-press C), '
+    '~2mA ultra-low-power standby. Burn once, enjoy for years. 🚀')
 
 
 def read_creds():
@@ -132,9 +141,57 @@ def share_code(token, fid, version):
     return r.text
 
 
+def update_meta(token):
+    """只更新名称/介绍/封面（fid 不变，分享码不失效，不重传 16MB 固件）"""
+    own = get_own(token)
+    item = None
+    for it in (own or []):
+        if (it.get('fid') or it.get('_id')) == FID:
+            item = it
+            break
+    if not item:
+        print('[FAIL] 未找到 fid=%s，先全量上传一次' % FID)
+        sys.exit(1)
+    vers = item.get('versions') or []
+    if not vers:
+        print('[FAIL] 固件无版本信息')
+        sys.exit(1)
+    file_hash = vers[-1]['file']
+    data = {
+        'name': NAME,
+        'description': DESCRIPTION,
+        'category': CATEGORY,
+        'author': item.get('author') or 'DrDavidDa',
+        'version': vers[-1].get('version') or VERSION,
+        'github': GITHUB,
+    }
+    files = {'cover': ('cover.gif', open(COVER, 'rb').read(), 'image/gif')}
+    print('[..] 更新元数据 fid=%s file=%s ...' % (FID, file_hash))
+    r = requests.put(API + '/api/admin/firmware/%s/version/%s' % (FID, file_hash),
+                     data=data, files=files,
+                     headers={'m5_auth_token': token}, timeout=120)
+    print('[%s] 更新 HTTP %d %s' % ('OK' if r.status_code == 200 else 'FAIL', r.status_code, r.text[:300]))
+    if r.status_code != 200:
+        sys.exit(1)
+    # 复核：重新拉列表确认新名称/封面已生效
+    own = get_own(token)
+    for it in (own or []):
+        if (it.get('fid') or it.get('_id')) == FID:
+            print('[OK] name=%s' % it.get('name'))
+            print('[OK] cover=%s' % it.get('cover'))
+            print('[OK] github=%s' % it.get('github'))
+            return
+
+
 def main():
     email, password = read_creds()
     token, username = login(email, password)
+
+    # --meta-only：只改名/介绍/封面后直接结束
+    if '--meta-only' in sys.argv:
+        update_meta(token)
+        print('[DONE] 元数据更新完成')
+        return
 
     # 已存在则跳过重复上传（按名称在"我的固件"里查）
     own = get_own(token)

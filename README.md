@@ -13,7 +13,7 @@
 [![Spectra 6](https://img.shields.io/badge/Display-4in_Spectra_6_Full_Color-00B2A9)](https://shop.m5stack.com/products/m5paper-color-esp32s3-dev-kit)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ready-8A2BE2)](https://platformio.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/DrDavidDa/eInk-Desk-Terminal/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/DrDavidDa/PaperColor-Desk-Terminal/pulls)
 
 </div>
 
@@ -198,8 +198,8 @@ flowchart LR
 ### 方式 A：M5Burner 一键烧录（零环境，推荐）
 
 1. 下载 [M5Burner](https://m5stack.com/pages/m5burner) → 右上角登录 M5Stack 社区账号
-2. 左下角 **USER CUSTOM** → 搜索 **eInk Desk Terminal**（类别 paper · 作者 DrDavid）→ Burn
-3. 或点 **Share Burn** 输入分享码：`h7QZeGjpDZQ6e8vv`
+2. 左下角 **USER CUSTOM** → 搜索 **PaperColor**（PaperColor eInk Desk Terminal）（类别 paper · 作者 DrDavid）→ Burn
+3. 或点 **Share Burn** 输入分享码：`uqzYX4i61TQriRrU`
 
 > 首次使用需向设备 SD 卡写入 `/config.ini`（WiFi + token），见下方「配置」。
 
@@ -328,7 +328,7 @@ M5Stack · PaperColor · M5Paper · M5Burner · eInk · E-Ink · E-Paper · 彩�
 如果你觉得它有点意思：
 
 - 点个 **Star** ⭐ 让更多人看到
-- 提 [Issue](https://github.com/DrDavidDa/eInk-Desk-Terminal/issues) 分享你的想法
-- 提 [PR](https://github.com/DrDavidDa/eInk-Desk-Terminal/pulls) 一起完善
+- 提 [Issue](https://github.com/DrDavidDa/PaperColor-Desk-Terminal/issues) 分享你的想法
+- 提 [PR](https://github.com/DrDavidDa/PaperColor-Desk-Terminal/pulls) 一起完善
 
 **墨水屏不该只用来「放那吃灰」——让它替你干活。** 📟
