@@ -118,8 +118,9 @@ def get_own(token):
     return data
 
 
-def set_public(token, fid, version):
-    r = requests.put(API + '/api/admin/firmware/%s/publish/%s/1' % (fid, version),
+def set_public(token, fid, file_hash):
+    # 注意：端点第2参数是 versionInfo.file（内部文件名hash.bin），不是版本字符串（逆向 UI 源码确认）
+    r = requests.put(API + '/api/admin/firmware/%s/publish/%s/1' % (fid, file_hash),
                      json={}, headers={'m5_auth_token': token}, timeout=30)
     print('[%s] 公开 HTTP %d %s' % ('OK' if r.status_code == 200 else '??', r.status_code, r.text[:200]))
 
@@ -159,8 +160,21 @@ def main():
             print('[FAIL] 上传后在"我的固件"中未找到，手动核对响应：', str(resp)[:400])
             sys.exit(1)
 
-    set_public(token, fid, VERSION)
-    share_code(token, fid, VERSION)
+    # 公开端点的第2参数是内部文件名（fid+file 定位具体版本），从"我的固件"里取最新版本
+    own = get_own(token)
+    file_hash = None
+    if isinstance(own, list):
+        for item in own:
+            if (item.get('fid') or item.get('_id')) == fid:
+                vers = item.get('versions') or []
+                if vers:
+                    file_hash = vers[-1].get('file')
+                break
+    if not file_hash:
+        print('[FAIL] 未取到版本内部文件名')
+        sys.exit(1)
+    set_public(token, fid, file_hash)
+    share_code(token, fid, file_hash)
     print('[DONE] 全流程完成：固件已发布并公开')
 
 

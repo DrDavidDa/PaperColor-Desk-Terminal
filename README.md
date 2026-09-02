@@ -195,6 +195,14 @@ flowchart LR
 | microSD 卡 | 存考点卡片、语音待办、二维码图 |
 | USB-C 数据线 | 烧录 + 串口（建议优质线材） |
 
+### 方式 A：M5Burner 一键烧录（零环境，推荐）
+
+1. 下载 [M5Burner](https://m5stack.com/pages/m5burner) → 右上角登录 M5Stack 社区账号
+2. 左下角 **USER CUSTOM** → 搜索 **eInk Desk Terminal**（类别 paper · 作者 DrDavid）→ Burn
+3. 或点 **Share Burn** 输入分享码：`h7QZeGjpDZQ6e8vv`
+
+> 首次使用需向设备 SD 卡写入 `/config.ini`（WiFi + token），见下方「配置」。
+
 ### 1. 环境
 
 ```bash
