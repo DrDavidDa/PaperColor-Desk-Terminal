@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 手动把手机热点 WiFi 写入设备 config（绕过 netsh 检测）
-# 用法: py write_hotspot.py "<SSID>" "<密码>"
-# 保留原 Xiaomi_403A 作为第 2 组
+# 用法: py write_hotspot.py "<热点SSID>" "<热点密码>" [家里SSID 家里密码]
+# 凭据只走命令行参数，不写进代码（避免泄露）
 import serial, time, os, sys
 
 PORT = 'COM4'
@@ -11,8 +11,10 @@ def main():
     if len(sys.argv) >= 3:
         hot_ssid, hot_pass = sys.argv[1], sys.argv[2]
     else:
-        hot_ssid, hot_pass = 'David的iPhone', '111222333'   # 默认
-    print('热点: %s | %s' % (hot_ssid, hot_pass))
+        print('用法: py write_hotspot.py "<热点SSID>" "<热点密码>" [家里SSID 家里密码]')
+        sys.exit(1)
+    home_ssid, home_pass = (sys.argv[3], sys.argv[4]) if len(sys.argv) >= 5 else ('', '')
+    print('热点: %s' % hot_ssid)
 
     token_file = os.path.join(HERE, 'zhipu_token.txt')
     token = open(token_file, encoding='utf-8').read().strip()
@@ -28,10 +30,13 @@ def main():
         "sd_log_enabled=true",
         "wifi_ssid=%s" % hot_ssid,          # 第1组 = 热点
         "wifi_pass=%s" % hot_pass,
-        "wifi_ssid2=Xiaomi_403A",           # 第2组 = 家里
-        "wifi_pass2=Dp15555550987",
-        "zhipu_cookie=%s" % token,
     ]
+    if home_ssid:
+        config_lines += [
+            "wifi_ssid2=%s" % home_ssid,    # 第2组 = 家里
+            "wifi_pass2=%s" % home_pass,
+        ]
+    config_lines.append("zhipu_cookie=%s" % token)
     config = '\n'.join(config_lines) + '\n'
 
     s = serial.Serial(PORT, 115200, timeout=1)
@@ -87,7 +92,7 @@ def main():
     d = s.read(256)
     print('验证:', d.decode('utf-8', 'replace').strip() if d else '(no reply)')
     s.close()
-    print('[OK] config.ini 已写入（第1组=%s 第2组=Xiaomi_403A）' % hot_ssid)
+    print('[OK] config.ini 已写入（第1组=%s%s）' % (hot_ssid, (' 第2组=' + home_ssid) if home_ssid else ''))
 
 if __name__ == '__main__':
     main()
