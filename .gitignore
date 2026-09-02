@@ -9,8 +9,13 @@
 sf_api_key.txt
 zhipu_token.txt
 wifi_extra.txt
+m5_credentials.txt
 *.token
 *_key.txt
+
+# ===== M5Burner 发布镜像（16MB 构建产物不入库）=====
+build_voice_data.bin
+m5burner_image.bin
 
 # ===== 开发诊断/测试脚本（本地保留，不进仓库）=====
 diag*.py
