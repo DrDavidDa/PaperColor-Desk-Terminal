@@ -108,7 +108,8 @@
 **AI 工具 · 智能硬件 · 独立开发**，欢迎来聊。本项目的想法、踩坑记录、固件更新第一时间同步：
 
 <p align="center">
-  加微信 <b>AI-fellows</b>（备注来意，拉你进交流群）
+  <img src="docs/images/wechat-qr.jpg" width="220" alt="微信二维码：加 AI-fellows"><br/>
+  微信扫码加 <b>AI-fellows</b>（备注来意，拉你进交流群）
 </p>
 
 ---
@@ -302,6 +303,15 @@ PaperColor_Study/
 ## 📄 License
 
 [MIT](LICENSE) © [DrDavidDa](https://github.com/DrDavidDa)
+
+---
+
+<details>
+<summary>🔎 关键词 / Keywords</summary>
+
+M5Stack · PaperColor · M5Paper · M5Burner · eInk · E-Ink · E-Paper · 彩色墨水屏 · 电子纸 · Spectra 6 · AC022 · ESP32 · ESP32-S3 · ESP32-S3R8 · PlatformIO · Arduino · C++ · 桌面终端 · Desk Terminal · 学习终端 · 离线中文 TTS · esp-sr · 语音助手 · Voice Assistant · Anki · 间隔记忆 · Spaced Repetition · 考点闪卡 · 番茄钟 · Pomodoro · RSS · 资讯早报 · 黄历 · 农历 · 宜忌 · 天气 · 低功耗 · Low Power · 轻睡眠 · Light Sleep · 智能桌面 · Smart Desk · 固件 · Firmware
+
+</details>
 
 ---
 
