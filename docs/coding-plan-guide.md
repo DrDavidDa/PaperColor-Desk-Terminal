@@ -166,9 +166,9 @@ Authorization: Bearer <token>
 
 ```ini
 use_wifi=true
-wifi_ssid=David的iPhone
+wifi_ssid=我的手机热点
 wifi_pass=12345678
-wifi_ssid2=Xiaomi_403A
+wifi_ssid2=家里WiFi
 wifi_pass2=xxxxxxxx
 poll_interval_sec=300
 sf_api_key=sk-xxxx
