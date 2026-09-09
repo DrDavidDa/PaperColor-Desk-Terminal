@@ -14,6 +14,8 @@
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ready-8A2BE2)](https://platformio.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/DrDavidDa/PaperColor-Desk-Terminal/pulls)
+[![X](https://img.shields.io/badge/X-@DrDavidDa-111111?logo=x)](https://x.com/DrDavidDa)
+[![Discord](https://img.shields.io/badge/Discord-dr.davidd-5865F2?logo=discord&logoColor=white)](#-交流)
 
 </div>
 
@@ -107,9 +109,14 @@
 
 **AI 工具 · 智能硬件 · 独立开发**，欢迎来聊。本项目的想法、踩坑记录、固件更新第一时间同步：
 
+- 微信：**AI-fellows**（AI玩家群）
+- X / Twitter：[@DrDavidDa](https://x.com/DrDavidDa)
+- Discord：**dr.davidd**
+- GitHub：[@DrDavidDa](https://github.com/DrDavidDa)
+
 <p align="center">
   <img src="docs/images/wechat-qr.jpg" width="220" alt="微信二维码：加 AI-fellows"><br/>
-  微信扫码加 <b>AI-fellows</b>（备注来意，拉你进交流群）
+  微信扫码加 <b>AI-fellows</b>（AI玩家群）
 </p>
 
 ---
