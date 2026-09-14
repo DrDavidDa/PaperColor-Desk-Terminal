@@ -5,6 +5,9 @@
 ## [Unreleased]
 
 ### 新增
+- **M5Burner 小白教程与 SD 配置模板**：新增 `docs/m5burner-quick-start.md` 和 `config.ini.example`，明确 M5Burner 烧录后优先用手机配网、离线使用操作、SD 卡根目录/文件名/格式要求，避免误建 `config.ini.txt` 或放错目录
+- **设备端 WiFi 配网页（SoftAP 热点 + captive portal）**：换 WiFi 不再依赖电脑/脚本/改代码——屏幕二维码页长按 B（或开机无凭据自动进入、串口 `#WIFIAP`）开启热点 `PaperColor-XXXXXX`，手机连上后浏览器自动弹出配置页，选 WiFi 输密码即完成；支持在线扫描周边 WiFi、实时连接状态轮询；凭据 NVS+SD 双写（NVS 优先级低，`#CFGDONE` 脚本全量写仍以 SD 为准并清 NVS）；配网成功自动校时（NTP + HTTP 兜底）后 10 秒自动退出收摊
+- `platformio.ini` 新增 `ricmoo/QRCode` 依赖（配网页面绘制连接地址二维码，手机扫码直达）
 - **天气多城市**：config.ini 新增 `weather_lat` / `weather_lon` / `weather_city`（默认北京）；日历页天气卡显示城市名；`write_config.py` 支持可选 `weather.txt`（lat= / lon= / city= 每行一条）
 - **WiFi 重连失败自动重试**：待机唤醒后重连失败 → 30 秒后自动重试（热点晚开/切换中场景），连上后立即拉智谱额度
 - `#POLL` 命令与 `#WX` 同路径：WiFi 未连先重连再触发
@@ -12,6 +15,7 @@
 - README 更换实机照片（待机页大图 + 七页实拍画廊）
 
 ### 修复
+- **开机不上网修复**：`setup()` 末尾按已存凭据置 `wifiReconnectPending`，开机即自动连 WiFi 并校时（此前开机只进待机、等唤醒才连）；无任何凭据则自动进入配网模式
 - **RTC 日期不同步**：SNTP(UDP123) 在 iPhone 热点下不可靠 → 日期停在旧值。新增 HTTP Date 兜底校准（`fetchHttpTimeSync` 拉 www.baidu.com 响应头 → settimeofday + 写回 RTC 芯片），开机/待机唤醒 SNTP 后兜底执行，实测 RTC=真实日期
 - 新增 `#TIME` 诊断命令：对比系统 `time()` 与 RTC 芯片当前值
 - `verify_audit.py` 增强：`ser.write` 加 `write_timeout` 防 USB 卡死无限阻塞 + 异常捕获与明确提示（light sleep 后需物理重插 USB）
