@@ -132,7 +132,9 @@ def set_public(token, fid, file_hash):
     # 注意：端点第2参数是 versionInfo.file（内部文件名hash.bin），不是版本字符串（逆向 UI 源码确认）
     r = requests.put(API + '/api/admin/firmware/%s/publish/%s/1' % (fid, file_hash),
                      json={}, headers={'m5_auth_token': token}, timeout=30)
-    print('[%s] 公开 HTTP %d %s' % ('OK' if r.status_code == 200 else '??', r.status_code, r.text[:200]))
+    ok = r.status_code == 200
+    print('[%s] 公开 HTTP %d %s' % ('OK' if ok else 'FAIL', r.status_code, r.text[:200]))
+    return ok
 
 
 def share_code(token, fid, version):
@@ -140,6 +142,31 @@ def share_code(token, fid, version):
                       json={}, headers={'m5_auth_token': token}, timeout=30)
     print('[%s] ShareCode HTTP %d: %s' % ('OK' if r.status_code == 200 else '??', r.status_code, r.text[:300]))
     return r.text
+
+
+def update_firmware(token, fid, old_file):
+    """Upload the new firmware as a new version while preserving the M5Burner fid."""
+    if not os.path.exists(IMAGE):
+        print('[FAIL] 缺少镜像 %s' % IMAGE)
+        sys.exit(1)
+    data = {
+        'name': NAME,
+        'description': DESCRIPTION,
+        'category': CATEGORY,
+        'author': 'DrDavidDa',
+        'version': VERSION,
+        'github': GITHUB,
+    }
+    with open(IMAGE, 'rb') as firmware:
+        files = {'firmware': ('firmware.bin', firmware, 'application/octet-stream')}
+        r = requests.put(API + '/api/admin/firmware/%s/version/%s' % (fid, old_file),
+                         data=data, files=files,
+                         headers={'m5_auth_token': token}, timeout=900)
+    print('[%s] 上传 v%s HTTP %d %s' %
+          ('OK' if r.status_code == 200 else 'FAIL', VERSION, r.status_code, r.text[:300]))
+    if r.status_code != 200:
+        sys.exit(1)
+    return r.json() if r.text else {}
 
 
 def update_meta(token):
@@ -194,7 +221,7 @@ def main():
         print('[DONE] 元数据更新完成')
         return
 
-    # 已存在则跳过重复上传（按名称在"我的固件"里查）
+    # 已存在则复用 fid，并把最新镜像作为新版本上传
     own = get_own(token)
     fid = None
     if isinstance(own, list):
@@ -218,7 +245,7 @@ def main():
             print('[FAIL] 上传后在"我的固件"中未找到，手动核对响应：', str(resp)[:400])
             sys.exit(1)
 
-    # 公开端点的第2参数是内部文件名（fid+file 定位具体版本），从"我的固件"里取最新版本
+    # 对已有固件上传新版本；新上传返回的内部文件名由列表接口确认
     own = get_own(token)
     file_hash = None
     if isinstance(own, list):
@@ -226,12 +253,34 @@ def main():
             if (item.get('fid') or item.get('_id')) == fid:
                 vers = item.get('versions') or []
                 if vers:
+                    latest = vers[-1]
+                    if latest.get('version') != VERSION:
+                        update_firmware(token, fid, latest.get('file'))
+                        own = get_own(token)
+                        for refreshed in (own or []):
+                            if (refreshed.get('fid') or refreshed.get('_id')) == fid:
+                                vers = refreshed.get('versions') or []
+                                break
                     file_hash = vers[-1].get('file')
                 break
     if not file_hash:
         print('[FAIL] 未取到版本内部文件名')
         sys.exit(1)
-    set_public(token, fid, file_hash)
+    if not set_public(token, fid, file_hash):
+        # Some API versions return 400 when the newly uploaded version is
+        # already marked published; verify the authoritative list before failing.
+        verified = False
+        refreshed = get_own(token)
+        if isinstance(refreshed, list):
+            for item in refreshed:
+                if (item.get('fid') or item.get('_id')) == fid:
+                    versions = item.get('versions') or []
+                    verified = any(v.get('file') == file_hash and v.get('published') for v in versions)
+                    break
+        if not verified:
+            print('[FAIL] M5Burner 未确认版本已公开')
+            sys.exit(1)
+        print('[OK] 列表接口确认版本已公开（忽略重复公开返回的 400）')
     share_code(token, fid, file_hash)
     print('[DONE] 全流程完成：固件已发布并公开')
 
