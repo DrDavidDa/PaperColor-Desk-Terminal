@@ -27,7 +27,7 @@ COVER = os.path.join(HERE, 'docs', 'images', 'cover.gif')   # 轮播动图封面
 CREDS = os.path.join(HERE, 'm5_credentials.txt')
 
 NAME = 'PaperColor eInk Desk Terminal'
-VERSION = 'v1.0.0'
+VERSION = 'v3.1.0'
 CATEGORY = 'paper'          # M5Burner 官方 PaperColor 类别
 GITHUB = 'https://github.com/DrDavidDa/PaperColor-Desk-Terminal'
 FID = '0fc711c40244fb17a7df65c434deda4d'   # 首次上传分配的固件 ID（meta-only 按它定位）
@@ -37,7 +37,8 @@ DESCRIPTION = (
     '🎙 全离线中文 TTS + 全局语音助手「小彩」：任意页长按 C，说「打开日历」「开始番茄」，'
     '一句话直达，彻底解放双手。\n'
     '🌙 真·2mA 超低功耗待机，续航 25~50 天；墨水屏不闪烁、不烧屏，摆桌上常亮一整年。\n'
-    '⚡ M5Burner 一键烧录，SD 卡写入 WiFi 即联网，开箱即玩！\n'
+    '⚡ M5Burner 一键烧录；烧录后用手机连接 PaperColor-XXXXXX 热点即可配网，'
+    '也支持 SD 卡根目录 config.ini 备用配置；开箱即玩！\n'
     'English: Turn your 4" Spectra 6 full-color eInk into an all-in-one desk terminal — '
     'lunar calendar & weather, tech news RSS, spaced-repetition flashcards, Pomodoro, '
     'voice memos & dashboard. Fully offline Chinese TTS + voice assistant (long-press C), '
