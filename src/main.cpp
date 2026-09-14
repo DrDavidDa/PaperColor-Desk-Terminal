@@ -28,6 +28,9 @@
 #include <FS.h>
 #include <SPI.h>
 #include <Preferences.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <qrcode.h>
 #include <ArduinoJson.h>
 #include <M5Unified.h>
 #include <M5GFX.h>
@@ -117,6 +120,9 @@ RuntimeCard* kpCards = nullptr;      // 运行时卡片存储（PSRAM 动态分�
 size_t kpCount = 0;                  // 实际加载卡片数（0=使用内置）
 void loadCardsFromSD();              // 前向声明
 void stopVoicePlayback();            // 前向声明（playCurrentTodoVoice 调用）
+void startWifiSetup();               // 前向声明（二维码页长按B / 串口#WIFIAP / 开机无凭据自动进入）
+void stopWifiSetup();                // 前向声明（配网模式下按键退出）
+void clearWifiNVS();                 // 前向声明（串口 #CFGDONE 全量写完 config.ini 后清 NVS 凭据）
 
 struct NewsItem {
     const char* const tag;        // 标签
@@ -3588,7 +3594,12 @@ void handleCodingPlanSerial() {
                         }
                     }
                     loadCodingPlanConfig();
+                    clearWifiNVS();   // 脚本全量写完 config.ini：SD 为唯一 WiFi 来源，清网页配网存的 NVS 凭据
                     Serial.printf("[OK] config saved (token_len=%d)\n", (int)cpTokenLen);
+                } else if (strncmp(cpSerialBuf, "#WIFIAP", 7) == 0) {
+                    // 主机命令开 WiFi 配网模式（热点+手机网页配置，免电脑免脚本）
+                    startWifiSetup();
+                    Serial.println("[OK] wifi setup ap started");
                 } else if (strncmp(cpSerialBuf, "#LED|", 5) == 0) {
                     // #LED|r,g,b 亮灯3秒（确认 LED 硬件是否工作）+ 诊断
                     int rr = 255, gg = 0, bb = 0;
@@ -4277,6 +4288,327 @@ void drawPowerMenu() {
 }
 
 // ====================================================================
+// WiFi 配网模式：SoftAP 热点 + captive portal 配置页（全程无需电脑）
+// 入口：二维码页(6)长按B / 开机检测到从未配置过WiFi自动进入 / 串口 #WIFIAP
+// 流程：手机连热点 PaperColor-XXXXXX → 浏览器打开(或自动弹出) http://192.168.4.1
+//       → 扫描选择 WiFi 输密码 → 保存 NVS + 同步 SD /config.ini → 设备直连
+// 凭据双写策略：网页保存=NVS+SD 双写；串口脚本全量写(#CFGDONE)=SD 为准并清 NVS。
+// ====================================================================
+bool wifiSetupActive = false;           // 配网模式总开关（loop 每轮跑 captive DNS + HTTP）
+uint8_t wifiSetupPhase = 0;             // 0=AP就绪等待手机 1=已保存正在连STA 2=连接成功 3=连接失败
+unsigned long wifiSetupPhaseAt = 0;     // 当前阶段起始时刻（成功延迟收摊/失败提示用）
+DNSServer* wifiSetupDns = nullptr;      // captive portal DNS（通配解析全部指向本机）
+WebServer* wifiSetupWeb = nullptr;      // 配置页 HTTP 服务
+char wifiSetupApSsid[40] = "";          // 热点名 PaperColor-XXXXXX
+String wifiSetupScanHtml = "";          // 周边 WiFi 扫描结果（配置页 datalist）
+bool wifiSetupStaStarted = false;       // /save 后 STA 试连是否已启动（重活挪到状态机，HTTP 处理器只保存并秒回）
+bool wifiOfflineMode = false;           // 用户明确选择离线使用后持久化，开机不再自动进入配网
+
+bool hasWifiCredentials() {
+    for (int i = 0; i < 3; i++) if (cpWifiSsid[i][0] != '\0') return true;
+    return (strlen(WIFI_SSID) > 0 && strcmp(WIFI_SSID, "Your_WiFi_SSID") != 0);
+}
+
+// WiFi 凭据 NVS 读写（不依赖 SD 卡，无卡设备也能完成配网）
+// 开机顺序：先读 NVS，再读 SD /config.ini 覆盖 → 脚本配置始终可覆盖网页配置
+void loadWifiFromNVS() {
+    Preferences p;
+    if (!p.begin("wificfg", true)) return;
+    if (p.isKey("ssid")) {
+        String s = p.getString("ssid", "");
+        strncpy(cpWifiSsid[0], s.c_str(), sizeof(cpWifiSsid[0]) - 1);
+        cpWifiSsid[0][sizeof(cpWifiSsid[0]) - 1] = '\0';
+    }
+    if (p.isKey("pass")) {
+        String s = p.getString("pass", "");
+        strncpy(cpWifiPass[0], s.c_str(), sizeof(cpWifiPass[0]) - 1);
+        cpWifiPass[0][sizeof(cpWifiPass[0]) - 1] = '\0';
+    }
+    wifiOfflineMode = p.getBool("offline", false);
+    p.end();
+}
+
+void saveWifiToNVS(const char* ssid, const char* pass) {
+    Preferences p;
+    if (!p.begin("wificfg", false)) return;
+    p.putString("ssid", ssid);
+    p.putString("pass", pass);
+    p.putBool("offline", false);
+    p.end();
+}
+
+void saveWifiOfflineMode() {
+    Preferences p;
+    if (!p.begin("wificfg", false)) return;
+    p.putBool("offline", true);
+    p.end();
+}
+
+// 脚本全量写 config.ini 完成时调用：清 NVS 凭据，保证 SD 配置是唯一来源（避免残留旧配网凭据反向覆盖）
+void clearWifiNVS() {
+    Preferences p;
+    if (!p.begin("wificfg", false)) return;
+    p.clear();
+    p.end();
+}
+
+// 配网页保存后同步 SD /config.ini 的 WiFi 行（与桌面脚本配置保持一致；无SD/无文件则静默跳过，NVS 已足够）
+void wifiSetupUpdateSdConfig(const char* ssid, const char* pass) {
+    if (!initSDCard() || !SD.exists("/config.ini")) return;
+    File in = SD.open("/config.ini", FILE_READ);
+    if (!in) return;
+    String out;
+    bool hasS = false, hasP = false;
+    while (in.available()) {
+        String ln = in.readStringUntil('\n');
+        ln.trim();
+        if (ln.startsWith("wifi_ssid="))       { out += String("wifi_ssid=") + ssid + "\n"; hasS = true; }
+        else if (ln.startsWith("wifi_pass="))  { out += String("wifi_pass=") + pass + "\n"; hasP = true; }
+        else if (ln.length() > 0)              out += ln + "\n";
+    }
+    in.close();
+    if (!hasS) out += String("wifi_ssid=") + ssid + "\n";
+    if (!hasP) out += String("wifi_pass=") + pass + "\n";
+    File ou = SD.open("/config.ini", FILE_WRITE);
+    if (!ou) return;
+    ou.print(out);
+    ou.close();
+    Serial.println("[WIFISTP] 已同步 SD /config.ini WiFi 行");
+}
+
+static String wifiHtmlEscape(const String& s) {
+    String o;
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        if (c == '&') o += "&amp;";
+        else if (c == '<') o += "&lt;";
+        else if (c == '>') o += "&gt;";
+        else if (c == '"') o += "&quot;";
+        else o += c;
+    }
+    return o;
+}
+
+// 同步扫描周边 WiFi 并填充配置页下拉候选（APSTA 模式下可扫描；用户点"重新扫描"时短暂停顿属预期）
+void wifiSetupFillScan() {
+    wifiSetupScanHtml = "";
+    int n = WiFi.scanNetworks();
+    for (int i = 0; i < n && i < 15; i++) {
+        wifiSetupScanHtml += "<option value=\"" + wifiHtmlEscape(WiFi.SSID(i)) + "\">" +
+                             wifiHtmlEscape(WiFi.SSID(i)) + " (" + String(WiFi.RSSI(i)) + "dBm" +
+                             (WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? ", 加密" : "") + ")</option>";
+    }
+    WiFi.scanDelete();
+}
+
+// ------ 配置页 HTTP 处理（captive portal） ------
+void handleSetupRoot() {
+    String html = String("<!doctype html><html><head><meta charset=utf-8>") +
+                  "<meta name=viewport content='width=device-width,initial-scale=1'>" +
+                  "<title>PaperColor WiFi设置</title></head>" +
+                  "<body style='font-family:-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:12px'>" +
+                  "<h2>PaperColor WiFi 设置</h2>" +
+                  "<div style='background:#eef6ff;border-radius:10px;padding:12px;line-height:1.6'>" +
+                  "<b>请按下面步骤操作</b><br>" +
+                  "1. 手机保持连接设备热点 <b>" + wifiHtmlEscape(String(wifiSetupApSsid)) + "</b><br>" +
+                  "2. 如果手机提示“无互联网”，请选择“继续保持连接”<br>" +
+                  "3. 选择家里的 WiFi，输入密码<br>" +
+                  "4. 点击“保存并连接”，等待约 25 秒<br>" +
+                  "5. 连接成功后，设备约 10 秒后关闭热点，手机再切回家里 WiFi" +
+                  "</div>" +
+                  "<form method=POST action=/save>" +
+                  "<p><b>第 3 步：选择家里的 WiFi</b><br>WiFi名称(SSID)<br><input name=ssid list=sl required autocomplete=off " +
+                  "style='width:100%;padding:8px;font-size:16px'><datalist id=sl>" + wifiSetupScanHtml + "</datalist></p>" +
+                  "<p>密码<br><input name=pass type=password style='width:100%;padding:8px;font-size:16px'></p>" +
+                  "<p><button style='width:100%;padding:12px;font-size:18px'>第 4 步：保存并连接</button></p></form>" +
+                  "<p><a href='/scan'>重新扫描附近WiFi</a></p>" +
+                  "<p style='background:#fff8e1;border-radius:10px;padding:10px'>" +
+                  "<b>不想连接 WiFi？</b><br>请按设备上的 <b>C 键</b>，选择离线使用。设备会进入本地模式，之后可到二维码页长按 B 再配置 WiFi。</p>" +
+                  "<p style='color:#888'>当前已保存: " + wifiHtmlEscape(String(cpWifiSsid[0])) + "</p>" +
+                  "</body></html>";
+    wifiSetupWeb->send(200, "text/html; charset=utf-8", html);
+}
+
+void handleSetupScan() {
+    wifiSetupFillScan();
+    wifiSetupWeb->sendHeader("Location", "/", true);
+    wifiSetupWeb->send(302, "text/plain", "");
+}
+
+void handleSetupSave() {
+    String ssid = wifiSetupWeb->arg("ssid");
+    String pass = wifiSetupWeb->arg("pass");
+    ssid.trim();
+    if (ssid.length() == 0) {
+        wifiSetupWeb->send(200, "text/html; charset=utf-8",
+                           "<meta charset=utf-8>SSID 不能为空。<a href='/'>返回</a>");
+        return;
+    }
+    saveWifiToNVS(ssid.c_str(), pass.c_str());
+    strncpy(cpWifiSsid[0], ssid.c_str(), sizeof(cpWifiSsid[0]) - 1);
+    cpWifiSsid[0][sizeof(cpWifiSsid[0]) - 1] = '\0';
+    strncpy(cpWifiPass[0], pass.c_str(), sizeof(cpWifiPass[0]) - 1);
+    cpWifiPass[0][sizeof(cpWifiPass[0]) - 1] = '\0';
+    wifiSetupPhase = 1;
+    wifiSetupPhaseAt = millis();
+    wifiSetupStaStarted = false;   // SD 同步/WiFi.begin/刷屏由状态机执行，本处理器只保存凭据并立即响应（手机端绝不超时）
+    Serial.printf("[WIFISTP] 已保存 WiFi: %s（密码 %u 位）\n", ssid.c_str(), pass.length());
+    wifiSetupWeb->send(200, "text/html; charset=utf-8",
+        String("<meta charset=utf-8><meta http-equiv=refresh content=3 URL=/status>") +
+        "已保存: " + wifiHtmlEscape(ssid) + "，设备正在连接...<br><a href='/status'>查看连接状态</a>");
+}
+
+void handleSetupStatus() {
+    String st;
+    if (wifiSetupPhase == 2)
+        st = "✅ 连接成功！设备IP: " + WiFi.localIP().toString() + "。按设备任意键退出配网。";
+    else if (wifiSetupPhase == 1)
+        st = "⏳ 正在连接 WiFi，请稍候（最长 25 秒）...";
+    else if (wifiSetupPhase == 3)
+        st = "❌ 连接失败。请检查 WiFi 名称、密码和信号，<a href='/'>返回重新输入</a>";
+    else
+        st = "等待配置...";
+    wifiSetupWeb->send(200, "text/html; charset=utf-8",
+                       String("<meta charset=utf-8><meta http-equiv=refresh content=3>") + st);
+}
+
+void handleSetupCaptive() {
+    // captive portal：操作系统联网检测等一切非配置页请求 → 重定向回配置页（手机自动弹窗的关键）
+    wifiSetupWeb->sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
+    wifiSetupWeb->send(302, "text/plain", "");
+}
+
+// 绘制配网页面：热点名/地址大字 + URL 二维码 + 实时状态行（renderScreen 分支调用）
+void drawWifiSetupPage() {
+    // 顶栏标题（顶栏区已清为藏青）
+    M5.Display.setFont(&fonts::efontCN_16_b);
+    M5.Display.setTextColor(TFT_WHITE, TFT_NAVY);
+    M5.Display.setTextDatum(textdatum_t::top_left);
+    M5.Display.drawString("WiFi 配置模式", MARGIN_X, 10);
+
+    int startY = STATUS_BAR_HEIGHT;
+    M5.Display.setFont(&fonts::efontCN_16_b);
+    M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
+    M5.Display.drawString("1. 打开手机 WiFi", MARGIN_X, startY + 16);
+    M5.Display.drawString("2. 连接热点: " + String(wifiSetupApSsid), MARGIN_X, startY + 43);
+    M5.Display.drawString("3. 扫码或打开配置页", MARGIN_X, startY + 70);
+    M5.Display.drawString("4. 选家里WiFi，输密码并保存", MARGIN_X, startY + 97);
+    M5.Display.drawString("5. 成功后约10秒关闭热点", MARGIN_X, startY + 124);
+    M5.Display.setTextColor(TFT_NAVY, TFT_WHITE);
+    M5.Display.drawString("网址: http://192.168.4.1", MARGIN_X, startY + 151);
+
+    // 配置页地址二维码（version2=25x25 模块 ×4px=100px；手机扫码直达配置页）
+    uint8_t qrBuf[qrcode_getBufferSize(2)];
+    QRCode qrcode;
+    qrcode_initText(&qrcode, qrBuf, 2, ECC_LOW, "http://192.168.4.1");
+    const int qs = 4;
+    int qx = SCREEN_WIDTH - MARGIN_X - 25 * qs - 8, qy = startY + 28;
+    M5.Display.drawRect(qx - 4, qy - 4, 25 * qs + 8, 25 * qs + 8, TFT_BLACK);
+    for (uint8_t yy = 0; yy < qrcode.size; yy++)
+        for (uint8_t xx = 0; xx < qrcode.size; xx++)
+            if (qrcode_getModule(&qrcode, xx, yy))
+                M5.Display.fillRect(qx + xx * qs, qy + yy * qs, qs, qs, TFT_BLACK);
+    M5.Display.setFont(&fonts::efontCN_14_b);
+    M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
+    M5.Display.drawString("扫码直达配置页", qx - 20, qy + 25 * qs + 10);
+
+    // 实时状态行
+    M5.Display.setFont(&fonts::efontCN_16_b);
+    String st;
+    if (wifiSetupPhase == 0) st = "4.网页选家里WiFi→输密码→保存";
+    else if (wifiSetupPhase == 1) st = String("正在连接: ") + cpWifiSsid[0] + "（约25秒）";
+    else if (wifiSetupPhase == 2) st = String("连接成功! IP: ") + WiFi.localIP().toString();
+    else st = "连接失败：回网页检查密码后重试";
+    M5.Display.setTextColor(wifiSetupPhase == 2 ? TFT_DARKGREEN : (wifiSetupPhase == 3 ? TFT_RED : TFT_BLACK), TFT_WHITE);
+    M5.Display.drawString(st, MARGIN_X, startY + 185);
+
+    M5.Display.setFont(&fonts::efontCN_16_b);
+    M5.Display.setTextColor(TFT_RED, TFT_WHITE);
+    M5.Display.drawString("不配 WiFi：短按 C 键 = 离线使用", MARGIN_X, startY + 225);
+
+    // 底部操作条提示（底栏区已清为藏青）
+    M5.Display.setFont(&fonts::efontCN_16_b);
+    M5.Display.setTextColor(TFT_WHITE, TFT_NAVY);
+    M5.Display.setTextDatum(textdatum_t::middle_center);
+    M5.Display.drawString("C=离线使用    A/B=退出本次配置",
+                          SCREEN_WIDTH / 2, STATUS_BAR_HEIGHT + MAIN_AREA_HEIGHT + ACTION_BAR_HEIGHT / 2);
+    M5.Display.setTextDatum(textdatum_t::top_left);
+}
+
+void startWifiSetup() {
+    if (wifiSetupActive) return;
+    wifiOfflineMode = false;                 // 手动重新进入配网即表示用户想恢复联网
+    if (standbyMode) wakeFromStandby();          // 待机中收到 #WIFIAP：先恢复 240MHz/屏幕，才能显示配网页
+    if (WiFi.status() == WL_CONNECTED) { WiFi.disconnect(); wifiConnected = false; }
+    uint64_t mac = ESP.getEfuseMac();
+    snprintf(wifiSetupApSsid, sizeof(wifiSetupApSsid), "PaperColor-%06X", (unsigned)(mac & 0xFFFFFF));
+    WiFi.mode(WIFI_AP_STA);                    // APSTA：开热点同时保留 STA 能力（扫描/试连不断热点）
+    WiFi.softAP(wifiSetupApSsid);              // 开放热点，仅提供配置页
+    wifiSetupDns = new DNSServer();
+    wifiSetupDns->start(53, "*", WiFi.softAPIP());
+    wifiSetupWeb = new WebServer(80);
+    wifiSetupWeb->on("/", handleSetupRoot);
+    wifiSetupWeb->on("/scan", handleSetupScan);
+    wifiSetupWeb->on("/save", HTTP_POST, handleSetupSave);
+    wifiSetupWeb->on("/status", handleSetupStatus);
+    wifiSetupWeb->onNotFound(handleSetupCaptive);
+    wifiSetupWeb->begin();
+    wifiSetupPhase = 0;
+    wifiSetupPhaseAt = millis();
+    wifiSetupStaStarted = false;
+    wifiSetupActive = true;
+    Serial.printf("[WIFISTP] 配网模式启动 热点=%s IP=%s\n",
+                  wifiSetupApSsid, WiFi.softAPIP().toString().c_str());
+    renderScreen(false);                       // 先刷屏再扫描（扫描阻塞约2~3秒）
+    wifiSetupFillScan();
+}
+
+void stopWifiSetup() {
+    if (!wifiSetupActive) return;
+    wifiSetupActive = false;
+    if (wifiSetupWeb) { wifiSetupWeb->stop(); delete wifiSetupWeb; wifiSetupWeb = nullptr; }
+    if (wifiSetupDns) { wifiSetupDns->stop(); delete wifiSetupDns; wifiSetupDns = nullptr; }
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);                       // 回站点模式，由既有重连机制接管
+    wifiReconnectPending = true;               // STA已连则秒回true，未连则按已存凭据重试
+    Serial.println("[WIFISTP] 退出配网模式");
+    renderScreen(false);
+}
+
+// 配网连接状态机：/save 后轮询 STA 结果（loop 每轮调用）
+void wifiSetupTick() {
+    if (!wifiSetupActive) return;
+    unsigned long now = millis();
+    if (wifiSetupPhase == 1) {
+        if (!wifiSetupStaStarted) {            // 一次性启动：同步SD → 发起连接 → 刷"正在连接"页（HTTP 处理器已秒回手机）
+            wifiSetupStaStarted = true;
+            wifiSetupUpdateSdConfig(cpWifiSsid[0], cpWifiPass[0]);
+            if (WiFi.status() == WL_CONNECTED) WiFi.disconnect();
+            WiFi.begin(cpWifiSsid[0], cpWifiPass[0]);   // APSTA：手机保持连着热点围观连接结果
+            wifiSetupPhaseAt = now;            // 重置计时：SD 同步/刷屏耗时不算连接等待
+            Serial.printf("[WIFISTP] 开始连接 STA: %s\n", cpWifiSsid[0]);
+            renderScreen(false);
+        }
+        if (WiFi.status() == WL_CONNECTED && now - wifiSetupPhaseAt > 2000UL) {
+            wifiSetupPhase = 2;
+            wifiSetupPhaseAt = now;
+            configTime(8 * 3600, 0, "ntp.aliyun.com", "cn.pool.ntp.org", "pool.ntp.org");
+            syncRtcFromNTP();                  // 配网成功即校准 RTC（旧逻辑只有脚本+编译期SSID路径会校时）
+            Serial.printf("[WIFISTP] 连接成功 IP=%s\n", WiFi.localIP().toString().c_str());
+            renderScreen(false);
+        } else if (now - wifiSetupPhaseAt > 25000UL) {
+            wifiSetupPhase = 3;
+            wifiSetupPhaseAt = now;
+            WiFi.disconnect();                 // 回纯 AP 等待用户重试
+            Serial.println("[WIFISTP] 连接超时失败");
+            renderScreen(false);
+        }
+    } else if (wifiSetupPhase == 2 && now - wifiSetupPhaseAt > 10000UL) {
+        stopWifiSetup();                       // 成功展示10秒后自动收摊回主界面
+    }
+}
+
+// ====================================================================
 // 刷新管控核心：全屏渲染唯一入口（事件驱动，白名单制）
 // forceQuality=true  → 请求全彩刷新（受 30 分钟冷却限制，冷却期内自动降级黑白快刷）
 // forceQuality=false → 黑白快刷（日常翻页/切页/数字更新）
@@ -4320,6 +4652,14 @@ void renderScreen(bool forceQuality) {
     // 待机模式：画待机页并返回（省电，不再画顶栏/内容）
     if (standbyMode) {
         drawStandbyPage();
+        M5.Display.endWrite();
+        M5.Display.display();
+        return;
+    }
+
+    // WiFi 配网模式：独立页面（无需 SD 卡数据；按键在 loop 中拦截，不落下方页面切换逻辑）
+    if (wifiSetupActive) {
+        drawWifiSetupPage();
         M5.Display.endWrite();
         M5.Display.display();
         return;
@@ -4391,7 +4731,8 @@ void setup() {
     loadCardsFromSD();        // 先加载 SD 考点卡片（kpCount 决定后续用 SD 还是内置）
     loadTodoFromSD();
     loadReminders();          // 加载定时提醒（/reminders.txt）
-    loadCodingPlanConfig();   // 读取 Coding Plan 配置（缺失则默认）
+    loadWifiFromNVS();        // 先读 NVS 配网凭据（无 SD 卡也能有 WiFi 配置）
+    loadCodingPlanConfig();   // 读取 Coding Plan 配置（缺失则默认）；若 SD 有 wifi_ssid 行会覆盖 NVS
     loadMemoryStates();       // 依赖 cardTotal()，必须在 loadCardsFromSD 之后
     initTTS();                // 中文语音合成（模型来自 flash voice_data 分区；失败静默降级）
 
@@ -4407,6 +4748,19 @@ void setup() {
     renderScreen(false);
     lastScreenUpdate = millis();
     lastActivityMs = millis();   // 开机即视为活动：闲置 5 分钟自动待机（否则 lastActivityMs=0 永不待机）
+
+    // 开机 WiFi 决策：
+    // 1) 已有凭据（NVS 或 SD config.ini）→ 交给 loop 既有重连机制直连（修复：原 initWiFiNTP 只认
+    //    编译期 WIFI_SSID 占位符，导致配置了 WiFi 也永不开机直连，只能等闲置后手动触发）
+    // 2) 从未配置过 WiFi（无 NVS 无 SD 配置且编译期 SSID 是占位符）→ 自动进入配网模式，
+    //    屏幕出热点二维码，手机扫码即配，全程无需电脑
+    if (wifiOfflineMode) {
+        Serial.println("[WIFI] 用户选择离线模式，跳过自动配网");
+    } else if (hasWifiCredentials()) {
+        wifiReconnectPending = true;
+    } else {
+        startWifiSetup();
+    }
 }
 
 // ====================================================================
@@ -4441,6 +4795,13 @@ void loop() {
     // 串口接收 Coding Plan 数据（仅更新内存变量，绝不刷屏）
     handleCodingPlanSerial();
 
+    // WiFi 配网模式：captive DNS + 配置页 HTTP + 连接状态机（优先级最高，屏蔽常规网络任务）
+    if (wifiSetupActive) {
+        if (wifiSetupDns) wifiSetupDns->processNextRequest();
+        if (wifiSetupWeb) wifiSetupWeb->handleClient();
+        wifiSetupTick();
+    }
+
     // 按键事件待处理时，跳过阻塞型定时任务（智谱/RSS/天气），让按键优先响应
     bool keyBusy = keyA.clickPending || keyB.clickPending || keyC.clickPending ||
                    keyA.holdPending || keyB.holdPending || keyC.holdPending;
@@ -4456,7 +4817,7 @@ void loop() {
 
     // 闲置自动待机（省电）：无操作超时 → 待机页 + 降频 + 断WiFi；任意键唤醒
     // 转写排队中（asrPending）禁止待机：否则录音后 5 分钟无操作进 light sleep，转写任务永不执行
-    if (!standbyMode && !asrPending && !isRecordingNow && !voiceCmdMode && !voicePlaying && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
+    if (!standbyMode && !asrPending && !isRecordingNow && !voiceCmdMode && !voicePlaying && !wifiSetupActive && lastActivityMs != 0 && now - lastActivityMs > IDLE_SLEEP_MS) {
         standbyMode = true;
         setCpuFrequencyMhz(80);
         if (WiFi.status() == WL_CONNECTED) { WiFi.disconnect(); wifiConnected = false; }
@@ -4488,7 +4849,7 @@ void loop() {
     // 待机页不定时刷新：只显示当天日期+天气缓存（无时钟），省电 + 保护墨水屏寿命
 
     // 待机唤醒后延迟重连 WiFi：等按键处理完再连（不阻塞按键响应），避开录音/上传/新闻加载
-    if (wifiReconnectPending && !keyBusy && !isRecordingNow && !voiceCmdMode && !fileReceiving && !newsLoading) {
+    if (wifiReconnectPending && !wifiSetupActive && !keyBusy && !isRecordingNow && !voiceCmdMode && !fileReceiving && !newsLoading) {
         wifiReconnectPending = false;
         bool wasConn = wifiConnected;
         reconnectWifiFromConfig();            // 成功 → wifiConnected=true + NTP 同步
@@ -4500,7 +4861,7 @@ void loop() {
         }
     }
     // WiFi 重连失败定时重试（非阻塞；连上后与唤醒同路径：cpLastPollAt=0 立即拉额度）
-    if (!wifiReconnectPending && !wifiConnected && wifiRetryAt != 0 && now >= wifiRetryAt
+    if (!wifiReconnectPending && !wifiConnected && !wifiSetupActive && wifiRetryAt != 0 && now >= wifiRetryAt
         && !standbyMode && !isRecordingNow && !voiceCmdMode && !fileReceiving && !newsLoading && !keyBusy) {
         wifiRetryAt = 0;
         wifiReconnectPending = true;
@@ -4509,7 +4870,7 @@ void loop() {
     // WiFi 直连智谱轮询（按配置间隔；仅更新内存，绝不刷屏，不阻塞主循环）
     // 开机首次立即轮询一次（cpLastPollAt==0），之后按 poll_interval_sec 周期轮询
     // 录音/上传文件/待机期间禁止轮询（避免阻塞 loop 导致录音丢采样/串口溢出/待机耗电）
-    if (cpUseWifi && !standbyMode && !isRecordingNow && !voiceCmdMode && !fileReceiving && !keyBusy && (cpLastPollAt == 0 || now - cpLastPollAt >= (unsigned long)cpPollIntervalSec * 1000UL)) {
+    if (cpUseWifi && !standbyMode && !wifiSetupActive && !isRecordingNow && !voiceCmdMode && !fileReceiving && !keyBusy && (cpLastPollAt == 0 || now - cpLastPollAt >= (unsigned long)cpPollIntervalSec * 1000UL)) {
         cpLastPollAt = now;
         pollZhipuCodingPlan();
     }
@@ -4805,6 +5166,26 @@ void loop() {
         return;
     }
 
+    // ===== WiFi 配网模式：C=记住离线并退出，A/B=仅退出本次配网 =====
+    // 配网期间页面切换/录音/语音命令/关机菜单均不生效，专注配网
+    if (wifiSetupActive) {
+        bool exitByKey = keyA.clickPending || keyB.clickPending || keyC.clickPending ||
+                         keyA.holdPending || keyB.holdPending || keyC.holdPending;
+        if (exitByKey) {
+            bool offlineByC = wifiSetupPhase == 0 &&
+                              (keyC.clickPending || keyC.holdPending);
+            keyA.clickPending = keyB.clickPending = keyC.clickPending = false;
+            keyA.holdPending = keyB.holdPending = keyC.holdPending = false;
+            if (offlineByC) {
+                saveWifiOfflineMode();
+                wifiOfflineMode = true;
+                Serial.println("[WIFISTP] 用户选择离线使用");
+            }
+            stopWifiSetup();   // 收摊热点；C 键选择离线，A/B 仅取消本次配置
+        }
+        return;
+    }
+
     // 长按 C: 待办页=切页；二维码页=关机菜单；其他页=全局语音命令（最小路径：不刷屏+蓝灯，识别后一次刷屏进页）
     if (keyC.holdPending) {
         if (now - keyCLast >= BUTTON_DEBOUNCE_MS) {
@@ -4876,6 +5257,8 @@ void loop() {
                 speakCurrentKnowledge();
             } else if (currentPage == 4) {
                 deleteCurrentTodo();   // 待办页长按B=删除当前待办（语音待办同时删 WAV）
+            } else if (currentPage == 6) {
+                startWifiSetup();      // 二维码页长按B = WiFi 配网模式（热点+手机网页配置，无需电脑）
             }
         }
         return;

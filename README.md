@@ -207,8 +207,9 @@ flowchart LR
 1. 下载 [M5Burner](https://m5stack.com/pages/m5burner) → 右上角登录 M5Stack 社区账号
 2. 左下角 **USER CUSTOM** → 搜索 **PaperColor**（PaperColor eInk Desk Terminal）（类别 paper · 作者 DrDavid）→ Burn
 3. 或点 **Share Burn** 输入分享码：`uqzYX4i61TQriRrU`
+4. 烧录完成后，**不需要先创建 TF 卡文件**：设备无 WiFi 凭据时会自动显示配网说明，按屏幕提示用手机连接 `PaperColor-XXXXXX`，打开 `http://192.168.4.1` 完成配置
 
-> 首次使用需向设备 SD 卡写入 `/config.ini`（WiFi + token），见下方「配置」。
+> M5Burner 只负责烧录固件，不会自动读取电脑 WiFi。普通用户请优先使用手机配网；SD 卡 `config.ini` 是备用配置方式，详见 [`docs/m5burner-quick-start.md`](docs/m5burner-quick-start.md)。
 
 ### 1. 环境
 
@@ -224,7 +225,29 @@ USB-C 直连即可。PaperColor 板载按键、麦克风、扬声器、SD、温�
 
 ### 3. 配置
 
-编辑 `src/main.cpp` 顶部的集中配置区：
+**WiFi 三种配法，推荐 A（全程只用手机，无需电脑/无需改代码）：**
+
+**A. 手机配网（SoftAP 热点 + 网页配置）**
+
+1. 进入配网模式（任选其一）：
+   - 开机检测到从未配置过 WiFi → **自动进入**配网模式
+   - 二维码页（第 6 页）**长按 B**
+   - 串口发送 `#WIFIAP`
+2. 屏幕显示热点名 + 网址二维码 → 手机连接热点 `PaperColor-XXXXXX`（开放网络）
+3. 手机浏览器会自动弹出配置页（或手动打开 `http://192.168.4.1`）→ 可点"重新扫描附近WiFi"→ 选择家里 WiFi → 输密码 → **保存并连接**
+4. 设备自动连接；成功后屏幕提示并**10 秒后自动退出**配网模式，手机自动回连家里 WiFi
+
+> 凭据双写：NVS（设备内部）+ SD `/config.ini`（`wifi_ssid=` / `wifi_pass=` 行，与脚本配置互通）。配网成功即自动校时（NTP + HTTP 兜底）。
+
+完整小白教程：[`docs/m5burner-quick-start.md`](docs/m5burner-quick-start.md)。如果用 SD 卡备用方式，请复制 [`config.ini.example`](config.ini.example) 到 SD 卡根目录并改名为 `config.ini`。
+
+**B. 编译期写入**（下述 `WIFI_SSID` / `WIFI_PASS`）
+
+**C. 电脑脚本**（下述 `write_config.py`，插上 USB 自动跟随电脑 WiFi）
+
+---
+
+编译期方式：编辑 `src/main.cpp` 顶部的集中配置区：
 
 ```cpp
 #define WIFI_SSID     "你的WiFi"
@@ -251,6 +274,7 @@ pio run -j 1 -t upload --upload-port COM4
 
 - 短按 A/B 翻页，长按 A/B 触发功能
 - **长按 C = 全局语音命令**
+- **二维码页长按 B = WiFi 配网模式**（换 WiFi/改密码不用重烧固件）
 - 5 分钟无操作自动进待机页，任意键唤醒
 
 ---
