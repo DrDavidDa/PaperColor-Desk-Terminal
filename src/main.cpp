@@ -5326,7 +5326,7 @@ void loop() {
                     renderScreen(false);
                 }
             } else if (currentPage == 5) {
-                currentPage = 4;             // 第6页(仪表盘) → 上一页(待办)
+                currentPage = 4;             // 仪表盘页 → 上一页(待办)
                 refreshPageData();
                 renderScreen(false);
             } else if (currentPage == 6) {
